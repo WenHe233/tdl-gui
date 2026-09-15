@@ -17,6 +17,8 @@ const dateBoundary = (v?:string,end=false) => {if(!v)return undefined;if(/^\d{4}
 const dateISO = (v?:string,end=false) => dateBoundary(v,end)?.toISOString();
 const normalizedExt = (m:Media) => (m.extension||m.fileName.split(".").pop()||"").replace(/^\./,"").toLowerCase();
 const hasExt = (items:string[]|undefined,ext:string) => !!items?.some(item=>item.trim().replace(/^\./,"").toLowerCase()===ext);
+const thumbnailExtensions = new Set(["jpg","jpeg","png","webp","gif","bmp","avif","heic","heif","mp4","mov","m4v","mkv","webm","avi","wmv","flv","mpeg","mpg","3gp","pdf"]);
+const canHaveThumbnail = (m:Media) => ["photo","video","animation","sticker"].includes(m.kind)||thumbnailExtensions.has(normalizedExt(m));
 const makeID = (prefix:string) => `${prefix}_${crypto.randomUUID().replaceAll("-","").slice(0,16)}`;
 const imageSource = (value:string) => value.startsWith("data:") ? value : convertFileSrc(value);
 const shutdownApp = async()=>{try{await rpc("app.shutdown")}finally{try{await invoke("worker_stop")}finally{await invoke("quit_app")}}};
@@ -55,7 +57,7 @@ export default function App(){
 
   const refreshBootstrap = async()=>{const b=await rpc<Bootstrap>("app.bootstrap");setBoot(b);setEngine(b.engine);setAccounts(b.accounts);setActive(b.activeAccount);setJobs(b.jobs);return b;};
   const loadChats = async(accountId?:string)=>{if(!accountId)return;const list=await rpc<Chat[]>("chats.list",{accountId,query:""});setChats(list)};
-  const loadMedia = async(c:Chat,offset=0)=>{setChat(c);if(!offset)setTopicId("");setLoading("正在载入媒体索引…");try{const page=await rpc<{items:Media[];nextOffset:number;hasMore:boolean}>("media.list",{accountId:active?.id,chatId:c.id,offset,limit:100});setMedia(v=>offset?[...v,...page.items]:page.items);setMediaOffset(page.nextOffset);setHasMoreMedia(page.hasMore);const refs=page.items.filter(m=>["photo","video","animation","sticker"].includes(m.kind)&&!m.thumbPath).map(m=>({chatId:m.chatId,messageId:m.messageId}));if(refs.length&&active){rpc<Record<string,string>>("media.thumbnails",{accountId:active.id,items:refs}).then(paths=>setMedia(v=>v.map(m=>paths[m.messageId]?{...m,thumbPath:paths[m.messageId]}:m))).catch(()=>{})}}catch(e){setError(String(e))}finally{setLoading("")}};
+  const loadMedia = async(c:Chat,offset=0)=>{setChat(c);if(!offset)setTopicId("");setLoading("正在载入媒体索引…");try{const page=await rpc<{items:Media[];nextOffset:number;hasMore:boolean}>("media.list",{accountId:active?.id,chatId:c.id,offset,limit:100});setMedia(v=>offset?[...v,...page.items]:page.items);setMediaOffset(page.nextOffset);setHasMoreMedia(page.hasMore);const refs=page.items.filter(m=>canHaveThumbnail(m)&&!m.thumbPath).map(m=>({chatId:m.chatId,messageId:m.messageId}));if(refs.length&&active){rpc<Record<string,string>>("media.thumbnails",{accountId:active.id,items:refs}).then(paths=>setMedia(v=>v.map(m=>paths[m.messageId]?{...m,thumbPath:paths[m.messageId]}:m))).catch(()=>{})}}catch(e){setError(String(e))}finally{setLoading("")}};
 
   useEffect(()=>{let offEvent=()=>{};let offClose=()=>{};(async()=>{try{await startWorker();offEvent=onWorkerEvent(handleEvent);offClose=await listen("app-close-requested",()=>{if(runningJobsRef.current.length)setCloseChoice(true);else shutdownApp()});await refreshBootstrap();setLoading("")}catch(e){setError(String(e));setLoading("")}})();return()=>{offEvent();offClose()}},[]);
   useEffect(()=>{activeAccountId.current=active?.id;setAvatars({});requestedAvatars.current.clear();if(active)loadChats(active.id)},[active?.id]);

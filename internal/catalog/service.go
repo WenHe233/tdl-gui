@@ -234,6 +234,9 @@ func parseMedia(accountID, chatID, messageID, fileName string, date int64, capti
 			kind = "animation"
 		}
 	}
+	if kind == "document" {
+		kind = kindFromFile(mime, fileName)
+	}
 	if len(photo) > 0 {
 		sizes := sliceAt(photo, "sizes")
 		for _, v := range sizes {
@@ -261,6 +264,30 @@ func parseMedia(accountID, chatID, messageID, fileName string, date int64, capti
 	}
 	ext := strings.ToLower(filepath.Ext(fileName))
 	return domain.Media{AccountID: accountID, ChatID: chatID, MessageID: messageID, MediaID: mediaID, GroupedID: stringNumberAt(raw, "grouped_id"), Kind: kind, FileName: fileName, Extension: ext, MIME: mime, Size: size, Caption: caption, Date: time.Unix(date, 0), Duration: duration, Width: width, Height: height}, true
+}
+
+func kindFromFile(mimeType, fileName string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	ext := strings.ToLower(filepath.Ext(fileName))
+	switch {
+	case strings.HasPrefix(mimeType, "video/"), extIn(ext, ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".wmv", ".flv", ".mpeg", ".mpg", ".3gp"):
+		return "video"
+	case mimeType == "image/gif", ext == ".gif":
+		return "animation"
+	case strings.HasPrefix(mimeType, "audio/"), extIn(ext, ".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus", ".wma"):
+		return "audio"
+	default:
+		return "document"
+	}
+}
+
+func extIn(ext string, values ...string) bool {
+	for _, value := range values {
+		if ext == value {
+			return true
+		}
+	}
+	return false
 }
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)

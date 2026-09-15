@@ -205,8 +205,13 @@ func (s *Service) Thumbnails(ctx context.Context, accountID string, refs []Ref) 
 func thumbnailMedia(msg *tg.Message) (*tmedia.Media, bool) {
 	switch m := msg.Media.(type) {
 	case *tg.MessageMediaDocument:
+		if p, ok := m.VideoCover.(*tg.Photo); ok {
+			if thumb, found := photoThumb(p); found {
+				return thumb, true
+			}
+		}
 		if d, ok := m.Document.(*tg.Document); ok {
-			return tmedia.GetDocumentThumb(d)
+			return documentThumb(d)
 		}
 	case *tg.MessageMediaPhoto:
 		if p, ok := m.Photo.(*tg.Photo); ok {
@@ -215,28 +220,47 @@ func thumbnailMedia(msg *tg.Message) (*tmedia.Media, bool) {
 	}
 	return nil, false
 }
+func documentThumb(d *tg.Document) (*tmedia.Media, bool) {
+	typ, size := thumbnailSize(d.Thumbs)
+	if typ == "" || size <= 0 {
+		return nil, false
+	}
+	return &tmedia.Media{InputFileLoc: &tg.InputDocumentFileLocation{ID: d.ID, AccessHash: d.AccessHash, FileReference: d.FileReference, ThumbSize: typ}, Name: "thumb.jpg", Size: int64(size), DC: d.DCID, Date: int64(d.Date)}, true
+}
 func photoThumb(p *tg.Photo) (*tmedia.Media, bool) {
-	var typ string
-	size := 0
-	for _, raw := range p.Sizes {
-		switch x := raw.(type) {
-		case *tg.PhotoSize:
-			if x.W <= 640 && x.Size >= size {
-				typ, size = x.Type, x.Size
-			}
-		case *tg.PhotoSizeProgressive:
-			if x.W <= 640 && len(x.Sizes) > 0 && x.Sizes[len(x.Sizes)-1] >= size {
-				typ, size = x.Type, x.Sizes[len(x.Sizes)-1]
-			}
-		}
-	}
-	if typ == "" {
-		typ, size, _ = tmedia.GetPhotoSize(p.Sizes)
-	}
-	if typ == "" || size == 0 {
+	typ, size := thumbnailSize(p.Sizes)
+	if typ == "" || size <= 0 {
 		return nil, false
 	}
 	return &tmedia.Media{InputFileLoc: &tg.InputPhotoFileLocation{ID: p.ID, AccessHash: p.AccessHash, FileReference: p.FileReference, ThumbSize: typ}, Name: "thumb.jpg", Size: int64(size), DC: p.DCID, Date: int64(p.Date)}, true
+}
+func thumbnailSize(sizes []tg.PhotoSizeClass) (string, int) {
+	var typ, fallbackType string
+	size, fallbackSize := 0, 0
+	for _, raw := range sizes {
+		candidateType, candidateSize, width, height := "", 0, 0, 0
+		switch x := raw.(type) {
+		case *tg.PhotoSize:
+			candidateType, candidateSize, width, height = x.Type, x.Size, x.W, x.H
+		case *tg.PhotoSizeProgressive:
+			if len(x.Sizes) > 0 {
+				candidateType, candidateSize, width, height = x.Type, x.Sizes[len(x.Sizes)-1], x.W, x.H
+			}
+		}
+		if candidateType == "" || candidateSize <= 0 {
+			continue
+		}
+		if candidateSize > fallbackSize {
+			fallbackType, fallbackSize = candidateType, candidateSize
+		}
+		if width <= 640 && height <= 640 && candidateSize > size {
+			typ, size = candidateType, candidateSize
+		}
+	}
+	if typ == "" {
+		return fallbackType, fallbackSize
+	}
+	return typ, size
 }
 func (s *Service) prune() {
 	if s.maxBytes <= 0 {
