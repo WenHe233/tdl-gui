@@ -1,0 +1,13 @@
+export type Account = { id:string; namespace:string; displayName:string; username?:string; userId?:string; active:boolean };
+export type Topic = { id:string; title:string };
+export type Chat = { accountId:string; id:string; type:string; visibleName:string; username?:string; topics?:Topic[] };
+export type Media = { accountId:string; chatId:string; messageId:string; mediaId:string; groupedId?:string; kind:string; fileName:string; extension?:string; mime?:string; size:number; caption?:string; date:string; duration?:number; width?:number; height?:number; thumbPath?:string; localPath?:string; downloaded:boolean };
+export type Rule = { id:string; name:string; accountId:string; chatId:string; topicId?:string; from?:string; to?:string; recentDays?:number; lastN?:number; minMessageId?:number; maxMessageId?:number; kinds?:string[]; includeExt?:string[]; excludeExt?:string[]; includeKeyword?:string; excludeKeyword?:string; minFileSize?:number; maxFileSize?:number; maxFiles?:number; maxTotalSize?:number; order:string; timezone:string; rootDir:string; template:string };
+export type PlanItem = { media:Media; targetPath:string; status:string; reason?:string; existing:boolean; selected:boolean; canonicalId:string };
+export type DownloadPlan = { id:string; ruleId?:string; accountId:string; chatId:string; createdAt:string; messageCount:number; uniqueFiles:number; existingFiles:number; selectedFiles:number; selectedBytes:number; items:PlanItem[] };
+export type Job = { id:string; planId:string; accountId:string; chatId:string; state:string; totalFiles:number; doneFiles:number; failedFiles:number; totalBytes:number; doneBytes:number; error?:string; createdAt:string; updatedAt:string };
+export type JobItem = { jobId:string; mediaId:string; chatId:string; messageId:string; targetPath:string; state:string; size:number; attempts:number; error?:string };
+export type Settings = { dataDir:string; downloadRoot:string; proxy?:string; fileConcurrency:number; retries:number; cacheMaxBytes:number; enginePath?:string; engineVersion?:string };
+export type Engine = { version:string; path:string; active:boolean };
+export type Bootstrap = { protocolVersion:string; settings:Settings; accounts:Account[]; activeAccount?:Account; engine?:Engine; rules:Rule[]; jobs:Job[] };
+export type WorkerEvent = { type:string; loginId?:string; qrCode?:string; prompt?:string; choices?:string[]; account?:Account; error?:string; jobId?:string; job?:Job; item?:JobItem; message?:string };

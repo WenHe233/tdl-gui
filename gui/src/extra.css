@@ -1,0 +1,16 @@
+.load-more {
+  margin: 18px auto 8px;
+  border: 1px solid #3a4d5e;
+  background: #192938;
+  color: #9fc5e3;
+  border-radius: 20px;
+  padding: 9px 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.load-more:hover { background: #21384b; color: #fff; }
+.image-preview { display: flex; flex-direction: column; gap: 10px; }
+.image-preview img { max-width: min(90vw, 1100px); max-height: 82vh; object-fit: contain; border-radius: 10px; box-shadow: 0 12px 45px #000; }
+.image-preview p { margin: 0; color: white; }
+.image-preview .modal-close { position: fixed; color: white; background: #10202dcc; width: 38px; height: 38px; border-radius: 50%; place-items: center; }

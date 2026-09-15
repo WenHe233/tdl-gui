@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TDL Media",
+  "version": "0.1.6",
+  "identifier": "app.tdl-media.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{
+      "title": "TDL Media",
+      "width": 1360,
+      "height": 850,
+      "minWidth": 980,
+      "minHeight": 650,
+      "center": true,
+      "decorations": true,
+      "resizable": true
+    }],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost",
+      "assetProtocol": { "enable": true, "scope": ["$LOCALAPPDATA/**", "$APPDATA/**"] }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Utility",
+    "shortDescription": "Browse and download Telegram media with tdl",
+    "windows": { "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true } },
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]
+  }
+}

@@ -1,0 +1,85 @@
+.avatar {
+  overflow: hidden;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.message-info > strong,
+.message-info > small {
+  display: block;
+}
+
+.message-info > small {
+  margin-top: 5px;
+}
+
+html,
+body,
+#root,
+.app-shell {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar,
+.conversation {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.account-bar,
+.search,
+.sidebar-footer,
+.conversation-header {
+  flex: none;
+}
+
+.chat-list,
+.message-stream,
+.filters-panel {
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+.filters-panel {
+  height: 100%;
+}
+
+:root {
+  color-scheme: dark;
+  --scrollbar-track: #101a24;
+  --scrollbar-thumb: #40566a;
+  --scrollbar-thumb-hover: #587188;
+}
+
+* {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  border: 2px solid var(--scrollbar-track);
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}

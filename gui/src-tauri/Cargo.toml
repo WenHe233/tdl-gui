@@ -1,0 +1,20 @@
+[package]
+name = "tdl-media-gui"
+version = "0.1.6"
+description = "Telegram media browser and downloader powered by tdl"
+authors = ["TDL Media contributors"]
+edition = "2021"
+
+[lib]
+name = "tdl_media_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"

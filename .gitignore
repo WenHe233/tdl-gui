@@ -1,0 +1,11 @@
+/bin/
+/dist/
+/data/
+/.cache/
+/.tmp-smoke-*/
+/gui/node_modules/
+/gui/.cache/
+/gui/dist/
+/gui/src-tauri/target/
+*.tmp
+*.log
