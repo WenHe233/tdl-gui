@@ -152,16 +152,10 @@ func RefreshDirectory(ctx context.Context, st *store.Store, gate *tdl.Runner, st
 			oldTopics[c.ID] = c.Topics
 		}
 		for _, folder := range []int{0, 1} {
-			visited := map[string]bool{}
 			query := dialogs.QueryFunc(func(ctx context.Context, offset dialogs.Request) (tg.MessagesDialogsClass, error) {
-				key := fmt.Sprintf("%d/%d/%s", offset.OffsetDate, offset.OffsetID, peerKey(offset.OffsetPeer))
-				if visited[key] {
-					return nil, fmt.Errorf("聊天分页未前进")
-				}
-				visited[key] = true
 				return api.MessagesGetDialogs(ctx, directoryDialogRequest(folder, offset))
 			})
-			iter := dialogs.NewIterator(query, 100)
+			iter := newDirectoryIterator(query)
 			for iter.Next(ctx) {
 				e := iter.Value()
 				d, ok := e.Dialog.(*tg.Dialog)

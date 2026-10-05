@@ -1,4 +1,4 @@
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = "0.3.0")
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = "0.3.1")
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot "set-version.ps1") -Version $Version
