@@ -70,11 +70,59 @@ func (s *Store) Directory(ctx context.Context, accountID string) ([]domain.Chat,
 	return chats, folders, err
 }
 func (s *Store) Folders(ctx context.Context, accountID string) ([]domain.ChatFolder, error) {
-	_, folders, err := s.Directory(ctx, accountID)
+	chats, folders, err := s.Directory(ctx, accountID)
 	if err == sql.ErrNoRows {
-		return []domain.ChatFolder{}, nil
+		chats, err = s.Chats(ctx, accountID, "")
 	}
-	return folders, err
+	if err != nil {
+		return nil, err
+	}
+	return directoryFolders(chats, folders), nil
+}
+
+// System folders are derived from the snapshot, including older snapshots that
+// predate archived metadata. Telegram's custom folder order stays unchanged.
+func directoryFolders(chats []domain.Chat, folders []domain.ChatFolder) []domain.ChatFolder {
+	all := domain.ChatFolder{ID: "all", Title: "全部聊天", ChatIDs: []string{}, PinnedIDs: []string{}}
+	archived := domain.ChatFolder{ID: "archived", Title: "已归档", ChatIDs: []string{}, PinnedIDs: []string{}}
+	pinned := append([]domain.Chat(nil), chats...)
+	sort.SliceStable(pinned, func(i, j int) bool { return pinned[i].PinnedOrder < pinned[j].PinnedOrder })
+	for _, c := range chats {
+		f := &all
+		if c.Archived {
+			f = &archived
+		}
+		f.ChatIDs = append(f.ChatIDs, c.ID)
+	}
+	for _, c := range pinned {
+		if c.PinnedOrder <= 0 {
+			continue
+		}
+		f := &all
+		if c.Archived {
+			f = &archived
+		}
+		f.PinnedIDs = append(f.PinnedIDs, c.ID)
+	}
+	out := make([]domain.ChatFolder, 0, len(folders)+2)
+	allFound := false
+	for _, f := range folders {
+		switch f.ID {
+		case "all":
+			if !allFound {
+				out = append(out, all, archived)
+				allFound = true
+			}
+		case "archived":
+			// Never retain a stale copy of the derived system folder.
+		default:
+			out = append(out, f)
+		}
+	}
+	if !allFound {
+		out = append([]domain.ChatFolder{all, archived}, out...)
+	}
+	return out
 }
 func (s *Store) BrowseChats(ctx context.Context, accountID, query, folderID, order string) ([]domain.Chat, error) {
 	chats, err := s.Chats(ctx, accountID, query)
@@ -87,7 +135,8 @@ func (s *Store) BrowseChats(ctx context.Context, accountID, query, folderID, ord
 	}
 	pins := map[string]int{}
 	members := map[string]bool{}
-	if folderID != "" && folderID != "all" {
+	systemFolder := folderID == "" || folderID == "all" || folderID == "archived"
+	if !systemFolder {
 		for _, f := range folders {
 			if f.ID == folderID {
 				for _, id := range f.ChatIDs {
@@ -101,8 +150,8 @@ func (s *Store) BrowseChats(ctx context.Context, accountID, query, folderID, ord
 	}
 	out := []domain.Chat{}
 	for _, c := range chats {
-		if folderID == "" || folderID == "all" || members[c.ID] {
-			if folderID == "" || folderID == "all" {
+		if folderID == "" || folderID == "all" && !c.Archived || folderID == "archived" && c.Archived || !systemFolder && members[c.ID] {
+			if systemFolder {
 				pins[c.ID] = c.PinnedOrder
 			}
 			out = append(out, c)

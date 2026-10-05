@@ -43,7 +43,7 @@ import type {
 } from "./types";
 import "./avatar.css";
 import { FolderRail } from "./FolderRail";
-import { browseChats, speedLabel, speedHint } from "./browsing";
+import { browseChats, withSystemFolders, speedLabel, speedHint } from "./browsing";
 import { useSelection, RequestScope } from "./selection";
 import { MediaCard } from "./MediaCard";
 import { JobsDrawer } from "./JobsDrawer";
@@ -186,6 +186,7 @@ export default function App() {
   const [chats, setChats] = useState<Chat[]>([]);
   const [folders, setFolders] = useState<ChatFolder[]>([]);
   const [folderId, setFolderId] = useState("all");
+  const folderSelectionVersion = useRef(0);
   const [chatOrder, setChatOrder] = useState("recent");
   const [mediaOrder, setMediaOrder] = useState("newest");
   const [refreshingChats, setRefreshingChats] = useState(false);
@@ -293,15 +294,20 @@ export default function App() {
   };
   const loadChats = async (accountId: string, generation: number, refresh = false) => {
     const current = () => activeAccountId.current === accountId && chatGeneration.current === generation;
+    const selectionVersion = folderSelectionVersion.current;
     try {
       const list = await rpc<Chat[]>(refresh ? "chats.refresh" : "chats.list", { accountId, query: "" });
       if (!current()) return;
-      if (Array.isArray(list)) setChats(list);
       const data = await rpc<{folders: ChatFolder[]; selectedFolderId?: string}>("chats.folders", {accountId});
       if (!current()) return;
-      const next = Array.isArray(data?.folders) ? data.folders : [];
+      const next = withSystemFolders(Array.isArray(data?.folders) ? data.folders : []);
+      if (Array.isArray(list)) setChats(list);
       setFolders(next);
-      setFolderId((previous) => {const wanted = refresh ? previous : data?.selectedFolderId || "all"; return wanted === "all" || next.some((f) => f.id === wanted) ? wanted : "all";});
+      const preserveSelection = refresh || folderSelectionVersion.current !== selectionVersion;
+      setFolderId((previous) => {
+        const wanted = preserveSelection ? previous : data?.selectedFolderId || "all";
+        return next.some((f) => f.id === wanted) ? wanted : "all";
+      });
       if (refresh) setChatSyncError("");
     } catch (e) {
       if (current()) setChatSyncError(`聊天列表更新失败：${String(e)}`);
@@ -423,6 +429,7 @@ export default function App() {
   useEffect(() => {
     activeAccountId.current = active?.id;
     const generation = ++chatGeneration.current;
+    folderSelectionVersion.current++;
     setAvatars({}); requestedAvatars.current.clear(); setFolders([]); setFolderId("all");setChats([]);setChatSyncError("");
     if (active) {
       setRefreshingChats(true);
@@ -594,7 +601,7 @@ export default function App() {
     await loadChats(active.id, ++chatGeneration.current, true);
   };
   const savePreference = (key: string, value: string) => void rpc("config.set", {key, value}).catch((e) => setError(String(e)));
-  const chooseFolder = (id: string) => {setFolderId(id);if (active) savePreference(`ui.folder.${active.id}`, id);};
+  const chooseFolder = (id: string) => {folderSelectionVersion.current++;setFolderId(id);if (active) savePreference(`ui.folder.${active.id}`, id);};
   const deleteLogin = async () => {
     if (!removeAccount || removingAccount) return;
     setRemovingAccount(true);
@@ -1050,8 +1057,8 @@ export default function App() {
               </span>
             </button>
           ))}
-          {active && !!chats.length && !filteredChats.length && <div className="empty-small">{query ? "没有匹配的聊天" : "此分组没有聊天"}</div>}
-          {active && !chats.length && (
+          {active && !filteredChats.length && (folderId === "archived" || !!chats.length) && <div className="empty-small">{query.trim() ? "没有匹配的聊天" : folderId === "archived" ? "暂无已归档对话" : "此分组没有聊天"}</div>}
+          {active && !chats.length && folderId !== "archived" && (
             <div className="empty-small">刷新以载入聊天列表</div>
           )}
         </div>

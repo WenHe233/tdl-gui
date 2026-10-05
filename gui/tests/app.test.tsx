@@ -257,3 +257,120 @@ it("keeps account history removal behind an explicit confirmation", async () => 
   fireEvent.click(dialog.querySelector(".danger")!);
   await waitFor(() => expect(vi.mocked(rpc).mock.calls.filter(([m]) => m === "accounts.remove")).toHaveLength(1));
 });
+
+const archivedChats: Chat[] = [{...chats[0],archived:true,topics:[{id:"5",title:"归档话题"}]},chats[1]];
+const archiveFolders = [{id:"all",title:"全部聊天",chatIds:["B"],pinnedIds:[]},
+  {id:"archived",title:"已归档",chatIds:["A"],pinnedIds:[]},
+  {id:"work",title:"工作",chatIds:["A","B"],pinnedIds:[]}];
+
+it("restores the cached archive before refresh and keeps it usable when offline", async () => {
+  let failRefresh!: (reason: Error) => void;
+  vi.mocked(rpc).mockImplementation(async(method,p:any)=>{
+    if(method==="chats.list")return archivedChats;
+    if(method==="chats.folders")return {folders:archiveFolders,selectedFolderId:"archived"};
+    if(method==="chats.refresh")return new Promise((_,reject)=>{failRefresh=reject;});
+    return base(method,p);
+  });
+  render(<App/>);
+  await screen.findByText("测试聊天A");
+  expect(screen.queryByText("测试聊天B")).toBeNull();
+  expect(screen.getByRole("button",{name:"已归档"}).getAttribute("aria-pressed")).toBe("true");
+  await waitFor(()=>expect(failRefresh).toBeTypeOf("function"));
+  await act(async()=>failRefresh(new Error("offline")));
+  await screen.findByText(/聊天列表更新失败/);
+  expect(screen.getByText("测试聊天A")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button",{name:"全部聊天"}));
+  expect(screen.getByText("测试聊天B")).toBeTruthy();
+  expect(screen.queryByText("测试聊天A")).toBeNull();
+  fireEvent.click(screen.getByRole("button",{name:"工作"}));
+  expect(screen.getByText("测试聊天A")).toBeTruthy();
+  expect(screen.getByText("测试聊天B")).toBeTruthy();
+});
+
+it("keeps a user folder choice made while saved preferences are still loading",async()=>{
+  let resolveFolders!: (value: unknown)=>void;
+  vi.mocked(rpc).mockImplementation(async(method,p:any)=>{
+    if(method==="chats.list"||method==="chats.refresh")return archivedChats;
+    if(method==="chats.folders")return new Promise(resolve=>{resolveFolders=resolve;});
+    return base(method,p);
+  });
+  render(<App/>);
+  await waitFor(()=>expect(resolveFolders).toBeTypeOf("function"));
+  fireEvent.click(screen.getByRole("button",{name:"已归档"}));
+  await act(async()=>resolveFolders({folders:archiveFolders,selectedFolderId:"all"}));
+  await screen.findByText("测试聊天A");
+  expect(screen.getByRole("button",{name:"已归档"}).getAttribute("aria-pressed")).toBe("true");
+});
+
+it("keeps archive browsing, topics and download selection working across folder changes",async()=>{
+  vi.mocked(rpc).mockImplementation(async(method,p:any)=>{
+    if(method==="chats.list"||method==="chats.refresh")return archivedChats;
+    if(method==="chats.folders")return {folders:archiveFolders,selectedFolderId:"archived"};
+    return base(method,p);
+  });
+  render(<App/>);fireEvent.click(await screen.findByText("测试聊天A"));
+  await screen.findByRole("button",{name:"预览 A-1.bin"});
+  fireEvent.change(screen.getByRole("option",{name:"归档话题"}).parentElement!,{target:{value:"5"}});
+  await waitFor(()=>expect(vi.mocked(rpc).mock.calls.some(([m,p]:any)=>m==="media.list"&&p.chatId==="A"&&p.topicId==="5")).toBe(true));
+  fireEvent.contextMenu(await screen.findByRole("button",{name:"预览 A-1.bin"}));
+  fireEvent.click(screen.getByRole("menuitem",{name:"选择消息"}));
+  fireEvent.click(screen.getByRole("button",{name:"全部聊天"}));
+  expect(screen.getByRole("button",{name:"预览 A-1.bin"})).toBeTruthy();
+  expect(screen.getByText("已选 1 项")).toBeTruthy();
+  fireEvent.click(screen.getByText("下载所选"));
+  await screen.findByText("下载清单");
+  expect(vi.mocked(rpc).mock.calls.find(([m])=>m==="media.previewSelection")?.[1]).toMatchObject({rule:{chatId:"A",topicId:"5"},messageIds:["1"]});
+});
+
+it("refreshes archive membership without overriding the selected folder",async()=>{
+  let resolveRefresh!: (value: unknown)=>void;
+  vi.mocked(rpc).mockImplementation(async(method,p:any)=>{
+    if(method==="chats.list")return archivedChats;
+    if(method==="chats.refresh")return new Promise(resolve=>{resolveRefresh=resolve;});
+    if(method==="chats.folders")return {folders:archiveFolders,selectedFolderId:"all"};
+    return base(method,p);
+  });
+  render(<App/>);await screen.findByText("测试聊天B");
+  await waitFor(()=>expect(resolveRefresh).toBeTypeOf("function"));
+  fireEvent.click(screen.getByRole("button",{name:"已归档"}));
+  await act(async()=>resolveRefresh([{...chats[0],archived:false},{...chats[1],archived:true}]));
+  await screen.findByText("测试聊天B");
+  expect(screen.queryByText("测试聊天A")).toBeNull();
+  expect(screen.getByRole("button",{name:"已归档"}).getAttribute("aria-pressed")).toBe("true");
+});
+
+it("isolates saved archive choices and discards a previous account's late refresh",async()=>{
+  const second={id:"b",namespace:"b",displayName:"第二账户",active:false};
+  let active=boot.activeAccount;
+  let resolveA!: (value:unknown)=>void;
+  vi.mocked(rpc).mockImplementation(async(method,p:any)=>{
+    if(method==="app.bootstrap")return {...boot,accounts:[...boot.accounts,second],activeAccount:active};
+    if(method==="accounts.use"){active=second;return true;}
+    if(method==="chats.list")return p.accountId==="a"?archivedChats:[{...chats[1],accountId:"b"}];
+    if(method==="chats.refresh")return p.accountId==="a"?new Promise(resolve=>{resolveA=resolve;}):[{...chats[1],accountId:"b"}];
+    if(method==="chats.folders")return {folders:archiveFolders,selectedFolderId:p.accountId==="a"?"archived":"all"};
+    return base(method,p);
+  });
+  render(<App/>);await screen.findByText("测试聊天A");
+  await waitFor(()=>expect(resolveA).toBeTypeOf("function"));
+  fireEvent.change(screen.getByLabelText("当前账户"),{target:{value:"b"}});
+  await screen.findByText("测试聊天B");
+  await act(async()=>resolveA(archivedChats));
+  expect(screen.queryByText("测试聊天A")).toBeNull();
+  expect(screen.getByRole("button",{name:"全部聊天"}).getAttribute("aria-pressed")).toBe("true");
+  fireEvent.click(screen.getByRole("button",{name:"已归档"}));
+  expect(screen.getByText("暂无已归档对话")).toBeTruthy();
+  expect(vi.mocked(rpc).mock.calls.some(([m,p]:any)=>m==="config.set"&&p.key==="ui.folder.b"&&p.value==="archived")).toBe(true);
+});
+
+it("shows the archive empty state even for an empty account and searches only within it",async()=>{
+  vi.mocked(rpc).mockImplementation(async(method,p:any)=>{
+    if(method==="chats.list"||method==="chats.refresh")return [];
+    if(method==="chats.folders")return {folders:[],selectedFolderId:"archived"};
+    return base(method,p);
+  });
+  render(<App/>);await screen.findByText("暂无已归档对话");
+  expect(screen.queryByText("刷新以载入聊天列表")).toBeNull();
+  fireEvent.change(screen.getByPlaceholderText("搜索聊天"),{target:{value:"missing"}});
+  expect(screen.getByText("没有匹配的聊天")).toBeTruthy();
+});

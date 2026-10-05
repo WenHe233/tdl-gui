@@ -9,6 +9,7 @@ export type Account = {
 export type Topic = { id: string; title: string };
 export type ChatFolder = {id: string; title: string; emoticon?: string; chatIds: string[]; pinnedIds: string[]};
 export type Chat = {
+ archived?: boolean;
  lastMessageAt?: string;
  pinnedOrder?: number;
  folderIds?: string[];

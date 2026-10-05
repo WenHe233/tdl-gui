@@ -145,13 +145,13 @@ func RefreshDirectory(ctx context.Context, st *store.Store, gate *tdl.Runner, st
 		manager := peers.Options{Storage: storage.NewPeers(db)}.Build(api)
 		meta := []dialogMeta{}
 		seen := map[string]bool{}
-		pinOrder := 0
 		old, _ := st.Chats(ctx, a.ID, "")
 		oldTopics := map[string][]domain.Topic{}
 		for _, c := range old {
 			oldTopics[c.ID] = c.Topics
 		}
 		for _, folder := range []int{0, 1} {
+			pinOrder := 0
 			query := dialogs.QueryFunc(func(ctx context.Context, offset dialogs.Request) (tg.MessagesDialogsClass, error) {
 				return api.MessagesGetDialogs(ctx, directoryDialogRequest(folder, offset))
 			})
@@ -168,7 +168,7 @@ func RefreshDirectory(ctx context.Context, st *store.Store, gate *tdl.Runner, st
 				}
 				seen[k] = true
 				m := dialogMeta{peer: e.Peer, archived: d.FolderID == 1, unread: d.UnreadCount > 0 || d.UnreadMark || d.UnreadMentionsCount > 0, mentioned: d.UnreadMentionsCount > 0}
-				c := domain.Chat{AccountID: a.ID}
+				c := domain.Chat{AccountID: a.ID, Archived: m.archived}
 				var users []tg.UserClass
 				var entities []tg.ChatClass
 				forum := false
@@ -250,7 +250,7 @@ func RefreshDirectory(ctx context.Context, st *store.Store, gate *tdl.Runner, st
 			case *tg.DialogFilterDefault:
 				f.ID = "all"
 				f.Title = "全部聊天"
-				matches = func(dialogMeta) bool { return true }
+				matches = func(m dialogMeta) bool { return !m.chat.Archived }
 			case *tg.DialogFilter:
 				f.ID = strconv.Itoa(x.ID)
 				f.Title = x.Title.Text

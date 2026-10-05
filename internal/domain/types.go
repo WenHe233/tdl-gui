@@ -18,6 +18,7 @@ type Account struct {
 }
 
 type Chat struct {
+	Archived      bool      `json:"archived"`
 	LastMessageAt time.Time `json:"lastMessageAt,omitempty"`
 	PinnedOrder   int       `json:"pinnedOrder,omitempty"`
 	FolderIDs     []string  `json:"folderIds,omitempty"`

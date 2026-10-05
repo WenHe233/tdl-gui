@@ -29,6 +29,8 @@ func TestFolderRules(t *testing.T) {
 		{"unread", tg.DialogFilter{Groups: true, ExcludeRead: true}, dialogMeta{chat: domain.Chat{Type: "group"}, unread: true}, true},
 		{"archived", tg.DialogFilter{Groups: true, ExcludeArchived: true}, dialogMeta{chat: domain.Chat{Type: "group"}, archived: true}, false},
 		{"explicit include", tg.DialogFilter{ExcludeMuted: true, IncludePeers: []tg.InputPeerClass{user}}, dialogMeta{peer: user, muted: true}, true},
+		{"explicit archived include", tg.DialogFilter{ExcludeArchived: true, IncludePeers: []tg.InputPeerClass{user}}, dialogMeta{peer: user, archived: true}, true},
+		{"archived group included", tg.DialogFilter{Groups: true}, dialogMeta{chat: domain.Chat{Type: "group"}, archived: true}, true},
 		{"explicit exclude", tg.DialogFilter{Contacts: true, ExcludePeers: []tg.InputPeerClass{user}}, dialogMeta{peer: user, chat: domain.Chat{Type: "private"}, contact: true}, false},
 		{"pinned", tg.DialogFilter{PinnedPeers: []tg.InputPeerClass{user}}, dialogMeta{peer: user}, true},
 		{"different peer", tg.DialogFilter{IncludePeers: []tg.InputPeerClass{other}}, dialogMeta{peer: user}, false},
