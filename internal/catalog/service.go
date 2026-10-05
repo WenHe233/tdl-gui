@@ -2,7 +2,9 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,10 +27,11 @@ type Store interface {
 	SetScanCursor(context.Context, string, string, string, string) error
 }
 type Service struct {
-	Directory func(context.Context, domain.Account) ([]domain.Chat, error)
-	store     Store
-	runner    *tdl.Runner
-	cache     string
+	Directory  func(context.Context, domain.Account) ([]domain.Chat, error)
+	ScanSource func(context.Context, domain.Account, ScanOptions, int64) ([]domain.Media, int64, error)
+	store      Store
+	runner     *tdl.Runner
+	cache      string
 }
 
 func New(store Store, runner *tdl.Runner, cache string) *Service {
@@ -100,6 +103,24 @@ func (s *Service) Scan(ctx context.Context, a domain.Account, o ScanOptions) ([]
 	if o.ChatID == "" {
 		return nil, fmt.Errorf("chat id is required")
 	}
+	if s.ScanSource != nil {
+		cursor := int64(0)
+		if !o.Rescan && o.From.IsZero() && o.To.IsZero() && o.LastN == 0 {
+			value, err := s.store.ScanCursor(ctx, a.ID, o.ChatID, o.TopicID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+			cursor, _ = strconv.ParseInt(value, 10, 64)
+		}
+		items, maxID, err := s.ScanSource(ctx, a, o, cursor)
+		if err != nil {
+			return nil, err
+		}
+		if maxID < cursor {
+			maxID = cursor
+		}
+		return s.saveScan(ctx, a, o, items, maxID)
+	}
 	tmp, err := os.CreateTemp(s.cache, "scan-*.json")
 	if err != nil {
 		return nil, err
@@ -160,6 +181,19 @@ func (s *Service) Scan(ctx context.Context, a domain.Account, o ScanOptions) ([]
 			items = append(items, m)
 		}
 	}
+	if maxID == 0 && incremental {
+		if cursor, e := s.store.ScanCursor(ctx, a.ID, o.ChatID, o.TopicID); e == nil {
+			maxID, _ = strconv.ParseInt(cursor, 10, 64)
+		}
+	}
+	return s.saveScan(ctx, a, o, items, maxID)
+}
+
+func (s *Service) saveScan(ctx context.Context, a domain.Account, o ScanOptions, items []domain.Media, maxID int64) ([]domain.Media, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var err error
 	fullRescan := o.Rescan && o.TopicID == "" && o.From.IsZero() && o.To.IsZero() && o.LastN == 0
 	if fullRescan {
 		err = s.store.ReplaceMedia(ctx, a.ID, o.ChatID, items)
@@ -170,13 +204,10 @@ func (s *Service) Scan(ctx context.Context, a domain.Account, o ScanOptions) ([]
 		return nil, err
 	}
 	if o.From.IsZero() && o.To.IsZero() && o.LastN == 0 {
-		if maxID == 0 && incremental {
-			if cursor, e := s.store.ScanCursor(ctx, a.ID, o.ChatID, o.TopicID); e == nil {
-				maxID, _ = strconv.ParseInt(cursor, 10, 64)
+		if maxID > 0 || fullRescan {
+			if err = s.store.SetScanCursor(ctx, a.ID, o.ChatID, o.TopicID, strconv.FormatInt(maxID, 10)); err != nil {
+				return nil, err
 			}
-		}
-		if maxID > 0 {
-			_ = s.store.SetScanCursor(ctx, a.ID, o.ChatID, o.TopicID, strconv.FormatInt(maxID, 10))
 		}
 	}
 	return items, nil

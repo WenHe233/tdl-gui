@@ -68,6 +68,9 @@ func Open(dataDir string, events func(jobs.Event)) (*Application, error) {
 	a.Catalog.Directory = func(ctx context.Context, account domain.Account) ([]domain.Chat, error) {
 		return catalog.RefreshDirectory(ctx, st, runner, paths.TDLStorage, runner.Proxy(), settings.NTP, account)
 	}
+	a.Catalog.ScanSource = func(ctx context.Context, account domain.Account, options catalog.ScanOptions, cursor int64) ([]domain.Media, int64, error) {
+		return catalog.ScanTelegram(ctx, st, runner, paths.TDLStorage, runner.Proxy(), settings.NTP, account, options, cursor)
+	}
 	a.Planner = planner.New(st)
 	a.Preview = preview.New(st, paths.TDLStorage, paths.Cache, settings.Proxy, settings.NTP, settings.CacheMaxBytes, runner)
 	a.Jobs = jobs.New(st, runner, paths.Staging, settings.Retries, settings.FileConcurrency, settings.TaskDelay, settings.MinFreeBytes, events)

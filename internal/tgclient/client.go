@@ -28,19 +28,20 @@ const AppDesktop = upstream.AppDesktop
 
 type adjustedClock struct {
 	clock.Clock
-	offset time.Duration
+	reference time.Time
+	elapsed   func() time.Duration
 }
 
-func (c adjustedClock) Now() time.Time { return c.Clock.Now().Add(c.offset) }
+func (c adjustedClock) Now() time.Time { return c.reference.Add(c.elapsed()) }
 
 var clockCache = struct {
 	sync.Mutex
 	entries map[string]struct {
-		offset  time.Duration
+		clock   clock.Clock
 		expires time.Time
 	}
 }{entries: make(map[string]struct {
-	offset  time.Duration
+	clock   clock.Clock
 	expires time.Time
 })}
 
@@ -57,7 +58,7 @@ func networkClock(ctx context.Context, proxy string, dial dcs.DialFunc) (clock.C
 	entry, ok := clockCache.entries[proxy]
 	clockCache.Unlock()
 	if ok && time.Now().Before(entry.expires) {
-		return adjustedClock{clock.System, entry.offset}, nil
+		return entry.clock, nil
 	}
 	transport := &http.Transport{DialContext: dial, TLSHandshakeTimeout: 8 * time.Second}
 	defer transport.CloseIdleConnections()
@@ -78,13 +79,16 @@ func networkClock(ctx context.Context, proxy string, dial dcs.DialFunc) (clock.C
 	if err != nil {
 		return nil, err
 	}
+	// Continue from the HTTPS time using Go's monotonic clock. A later system
+	// clock correction must not apply the cached offset a second time.
+	corrected := adjustedClock{Clock: clock.System, reference: end.Add(offset), elapsed: func() time.Duration { return time.Since(end) }}
 	clockCache.Lock()
 	clockCache.entries[proxy] = struct {
-		offset  time.Duration
+		clock   clock.Clock
 		expires time.Time
-	}{offset, time.Now().Add(5 * time.Minute)}
+	}{corrected, time.Now().Add(5 * time.Minute)}
 	clockCache.Unlock()
-	return adjustedClock{clock.System, offset}, nil
+	return corrected, nil
 }
 
 func New(ctx context.Context, o Options, login bool, middlewares ...telegram.Middleware) (*telegram.Client, error) {

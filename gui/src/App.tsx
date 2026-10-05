@@ -1696,7 +1696,7 @@ export default function App() {
       )}
       {showSettings && boot && (
         <SettingsModal
-          version={boot.version || "0.3.1"}
+          version={boot.version || "0.3.2"}
           updateResult={boot.updateResult}
           onUpdate={shutdownApp}
           settings={boot.settings}

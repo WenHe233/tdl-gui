@@ -81,7 +81,7 @@ TDL Media 是一个 Windows 优先的 Telegram 媒体浏览与批量下载器。
 需要 Go 1.25+、Node.js 24+、Rust stable 和 Windows WebView2。运行：
 
 ```powershell
-.\scripts\build.ps1 -Version 0.3.1
+.\scripts\build.ps1 -Version 0.3.2
 ```
 
 构建脚本运行 Go 测试、前端生产构建、Tauri 编译，并生成 `dist\TDL-Media-windows-x64-<version>.zip`。便携包不预装 tdl，首次使用时从官方发布页下载并校验。

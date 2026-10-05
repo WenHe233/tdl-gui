@@ -53,6 +53,7 @@ type StartOptions struct {
 	NTP             string `json:"ntp,omitempty"`
 }
 type sessionState struct {
+	committed bool
 	accountID string
 	done      chan struct{}
 	cancel    context.CancelFunc
@@ -157,11 +158,9 @@ func (m *Manager) run(ctx context.Context, loginID string, a domain.Account, o S
 	originalNamespace := a.Namespace
 	a.Namespace = "auth_" + loginID
 	defer func() {
-		namespace := a.Namespace
-		if result == nil {
-			namespace = originalNamespace
-		}
-		if err := m.clearNamespace(namespace); err != nil {
+		// Client.Run also returns nil when a connection is cancelled. Only a
+		// committed account proves that the new namespace may replace the old one.
+		if err := m.cleanupLoginNamespace(originalNamespace, a.Namespace, st.committed); err != nil {
 			result = errors.Join(result, err)
 		}
 	}()
@@ -305,6 +304,11 @@ func (m *Manager) complete(ctx context.Context, loginID string, a domain.Account
 	if err := m.store.SaveAccount(ctx, a); err != nil {
 		return err
 	}
+	m.mu.Lock()
+	if state := m.sessions[loginID]; state != nil {
+		state.committed = true
+	}
+	m.mu.Unlock()
 	if err := m.store.SetActiveAccount(ctx, a.ID); err != nil {
 		return err
 	}
@@ -472,4 +476,11 @@ func (m *Manager) clearNamespace(namespace string) error {
 	}
 	delete(meta, namespace)
 	return file.MigrateFrom(meta)
+}
+
+func (m *Manager) cleanupLoginNamespace(original, candidate string, committed bool) error {
+	if committed {
+		return m.clearNamespace(original)
+	}
+	return m.clearNamespace(candidate)
 }

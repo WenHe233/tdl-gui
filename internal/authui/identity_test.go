@@ -2,6 +2,7 @@ package authui
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,35 @@ import (
 	"github.com/local/tdl-gui/internal/store"
 	"github.com/local/tdl-gui/internal/tdl"
 )
+
+func TestLoginCleanupUsesCommitNotClientRunReturnValue(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		root := t.TempDir()
+		path := filepath.Join(root, "sessions.json")
+		// A cancelled gotd Run may return nil before the login callback succeeds.
+		if err := os.WriteFile(path, []byte(`{"old":{"session":"b2xk"},"new":{"session":"bmV3"},"other":{}}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		m := New(testStore{}, path, func(Event) {}, tdl.New(nil, "", "", ""))
+		if err := m.cleanupLoginNamespace("old", "new", committed); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var namespaces map[string]json.RawMessage
+		if err = json.Unmarshal(b, &namespaces); err != nil {
+			t.Fatal(err)
+		}
+		_, old := namespaces["old"]
+		_, fresh := namespaces["new"]
+		_, other := namespaces["other"]
+		if old == committed || fresh != committed || !other {
+			t.Fatalf("committed=%v old=%v new=%v other=%v", committed, old, fresh, other)
+		}
+	}
+}
 
 func TestLoginIdentityCannotReplaceExistingAccount(t *testing.T) {
 	ctx := context.Background()
@@ -26,10 +56,15 @@ func TestLoginIdentityCannotReplaceExistingAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := New(st, filepath.Join(root, "session.json"), func(Event) {}, tdl.New(nil, "", "", ""))
+	loginState := &sessionState{}
+	m.sessions["login"] = loginState
 	candidate := original
 	candidate.Namespace = "isolated"
 	if err = m.complete(ctx, "login", candidate, &tg.User{ID: 2}); err == nil {
 		t.Fatal("wrong identity accepted")
+	}
+	if loginState.committed {
+		t.Fatal("wrong identity committed")
 	}
 	got, _ := st.Account(ctx, "a")
 	if got.Namespace != "old" || got.UserID != "1" {
@@ -37,6 +72,9 @@ func TestLoginIdentityCannotReplaceExistingAccount(t *testing.T) {
 	}
 	if err = m.complete(ctx, "login", candidate, &tg.User{ID: 1}); err != nil {
 		t.Fatal(err)
+	}
+	if !loginState.committed {
+		t.Fatal("successful login not committed")
 	}
 	retired, _ := st.RemovedNamespaces(ctx)
 	if len(retired) != 1 || retired[0] != "old" {
