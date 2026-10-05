@@ -141,12 +141,19 @@ func (m *Manager) Install(ctx context.Context, version string) (domain.EngineVer
 	if err = m.download(ctx, download.BrowserDownloadURL, pkg); err != nil {
 		return domain.EngineVersion{}, err
 	}
-	want := ""
-	if checksum.BrowserDownloadURL != "" {
-		checks := filepath.Join(tmpDir, checksum.Name)
-		if err = m.download(ctx, checksum.BrowserDownloadURL, checks); err == nil {
-			want, _ = checksumFor(checks, download.Name)
-		}
+	if checksum.BrowserDownloadURL == "" {
+		return domain.EngineVersion{}, fmt.Errorf("发布缺少 SHA256 校验文件")
+	}
+	checks := filepath.Join(tmpDir, checksum.Name)
+	if err = m.download(ctx, checksum.BrowserDownloadURL, checks); err != nil {
+		return domain.EngineVersion{}, fmt.Errorf("下载校验文件: %w", err)
+	}
+	want, err := checksumFor(checks, download.Name)
+	if err != nil || len(want) != 64 {
+		return domain.EngineVersion{}, fmt.Errorf("发布校验文件缺少有效的 %s SHA256", download.Name)
+	}
+	if _, err = hex.DecodeString(want); err != nil {
+		return domain.EngineVersion{}, fmt.Errorf("无效 SHA256: %w", err)
 	}
 	got, err := fileSHA(pkg)
 	if err != nil {

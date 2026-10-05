@@ -31,6 +31,7 @@ type Topic struct {
 }
 
 type Media struct {
+	TopicID    string    `json:"topicId,omitempty"`
 	AccountID  string    `json:"accountId"`
 	ChatID     string    `json:"chatId"`
 	MessageID  string    `json:"messageId"`
@@ -91,6 +92,8 @@ type PlanItem struct {
 }
 
 type DownloadPlan struct {
+	From          time.Time  `json:"from,omitempty"`
+	To            time.Time  `json:"to,omitempty"`
 	ID            string     `json:"id"`
 	RuleID        string     `json:"ruleId,omitempty"`
 	AccountID     string     `json:"accountId"`

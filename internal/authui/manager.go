@@ -59,6 +59,7 @@ type sessionState struct {
 }
 type input struct{ kind, value string }
 type Manager struct {
+	wg             sync.WaitGroup
 	store          Store
 	storagePath    string
 	emit           func(Event)
@@ -90,7 +91,9 @@ func (m *Manager) Start(parent context.Context, o StartOptions) (string, error) 
 	m.mu.Lock()
 	m.sessions[id] = st
 	m.mu.Unlock()
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
 		defer timer.Stop()
 		err := m.run(ctx, id, a, o, st)
 		if ctx.Err() != nil {
@@ -375,4 +378,13 @@ func defaultDesktopPath() string {
 		return filepath.Join(appData, "Telegram Desktop")
 	}
 	return "Telegram Desktop"
+}
+
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	for _, s := range m.sessions {
+		s.cancel()
+	}
+	m.mu.Unlock()
+	m.wg.Wait()
 }

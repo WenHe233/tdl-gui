@@ -35,10 +35,13 @@ func (s *Service) Add(ctx context.Context, name, namespace string) (domain.Accou
 		return domain.Account{}, fmt.Errorf("display name is required")
 	}
 	if namespace == "" {
-		namespace = namespaceRE.ReplaceAllString(strings.ToLower(name), "-")
-	}
-	if namespace == "" {
-		namespace = idgen.New("account")
+		base := strings.Trim(namespaceRE.ReplaceAllString(strings.ToLower(name), "-"), "-")
+		if base == "" {
+			base = "account"
+		}
+		namespace = base + "-" + idgen.New("ns")
+	} else if namespaceRE.MatchString(namespace) {
+		return domain.Account{}, fmt.Errorf("namespace may only contain letters, digits, - and _")
 	}
 	now := time.Now().UTC()
 	a := domain.Account{ID: idgen.New("account"), Namespace: namespace, DisplayName: name, CreatedAt: now, UpdatedAt: now}

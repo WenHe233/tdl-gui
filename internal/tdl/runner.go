@@ -78,7 +78,9 @@ func (r *Runner) Command(ctx context.Context, namespace string, args ...string) 
 	return cmd, nil
 }
 func (r *Runner) Run(ctx context.Context, namespace string, args ...string) ([]byte, error) {
-	r.Acquire()
+	if err := r.AcquireContext(ctx); err != nil {
+		return nil, err
+	}
 	defer r.Release()
 	cmd, err := r.Command(ctx, namespace, args...)
 	if err != nil {
@@ -99,7 +101,9 @@ func (r *Runner) Run(ctx context.Context, namespace string, args ...string) ([]b
 	return stdout.Bytes(), nil
 }
 func (r *Runner) Interactive(ctx context.Context, namespace string, args ...string) error {
-	r.Acquire()
+	if err := r.AcquireContext(ctx); err != nil {
+		return err
+	}
 	defer r.Release()
 	cmd, err := r.Command(ctx, namespace, args...)
 	if err != nil {
@@ -119,7 +123,9 @@ type Process struct {
 
 func (p *Process) Wait() error { err := p.cmd.Wait(); p.once.Do(p.release); return err }
 func (r *Runner) Stream(ctx context.Context, namespace string, stdout, stderr io.Writer, args ...string) (*Process, error) {
-	r.Acquire()
+	if err := r.AcquireContext(ctx); err != nil {
+		return nil, err
+	}
 	cmd, err := r.Command(ctx, namespace, args...)
 	if err != nil {
 		r.Release()

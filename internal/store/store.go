@@ -82,6 +82,34 @@ CREATE TABLE IF NOT EXISTS scans (
  updated_at TEXT NOT NULL, PRIMARY KEY(account_id,chat_id,topic_id)
 );`
 	_, err := s.db.ExecContext(ctx, schema)
+	if err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(media)")
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		if err = rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "topic_id" {
+			found = true
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if !found {
+		_, err = s.db.ExecContext(ctx, "ALTER TABLE media ADD COLUMN topic_id TEXT NOT NULL DEFAULT ''")
+	}
 	return err
 }
 
@@ -226,11 +254,11 @@ func (s *Store) Account(ctx context.Context, id string) (domain.Account, error) 
 	return a, err
 }
 
-const insertMediaSQL = `INSERT INTO media(account_id,chat_id,message_id,media_id,grouped_id,kind,file_name,extension,mime,size,caption,message_date,duration,width,height,thumb_path,local_path,downloaded) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,chat_id,message_id) DO UPDATE SET media_id=excluded.media_id,grouped_id=excluded.grouped_id,kind=excluded.kind,file_name=excluded.file_name,extension=excluded.extension,mime=excluded.mime,size=excluded.size,caption=excluded.caption,message_date=excluded.message_date,duration=excluded.duration,width=excluded.width,height=excluded.height,thumb_path=CASE WHEN excluded.thumb_path<>'' THEN excluded.thumb_path WHEN media.media_id=excluded.media_id AND media.size=excluded.size THEN media.thumb_path ELSE '' END,local_path=CASE WHEN media.media_id=excluded.media_id AND media.size=excluded.size THEN media.local_path ELSE '' END,downloaded=CASE WHEN media.media_id=excluded.media_id AND media.size=excluded.size THEN media.downloaded ELSE 0 END`
+const insertMediaSQL = `INSERT INTO media(account_id,chat_id,message_id,media_id,topic_id,grouped_id,kind,file_name,extension,mime,size,caption,message_date,duration,width,height,thumb_path,local_path,downloaded) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,chat_id,message_id) DO UPDATE SET media_id=excluded.media_id,topic_id=excluded.topic_id,grouped_id=excluded.grouped_id,kind=excluded.kind,file_name=excluded.file_name,extension=excluded.extension,mime=excluded.mime,size=excluded.size,caption=excluded.caption,message_date=excluded.message_date,duration=excluded.duration,width=excluded.width,height=excluded.height,thumb_path=CASE WHEN excluded.thumb_path<>'' THEN excluded.thumb_path WHEN media.media_id=excluded.media_id AND media.size=excluded.size THEN media.thumb_path ELSE '' END,local_path=CASE WHEN media.media_id=excluded.media_id AND media.size=excluded.size THEN media.local_path ELSE '' END,downloaded=CASE WHEN media.media_id=excluded.media_id AND media.size=excluded.size THEN media.downloaded ELSE 0 END`
 
 func saveMedia(ctx context.Context, tx *sql.Tx, items []domain.Media) error {
 	for _, m := range items {
-		_, err := tx.ExecContext(ctx, insertMediaSQL, m.AccountID, m.ChatID, m.MessageID, m.MediaID, m.GroupedID, m.Kind, m.FileName, m.Extension, m.MIME, m.Size, m.Caption, formatTime(m.Date), m.Duration, m.Width, m.Height, m.ThumbPath, m.LocalPath, boolInt(m.Downloaded))
+		_, err := tx.ExecContext(ctx, insertMediaSQL, m.AccountID, m.ChatID, m.MessageID, m.MediaID, m.TopicID, m.GroupedID, m.Kind, m.FileName, m.Extension, m.MIME, m.Size, m.Caption, formatTime(m.Date), m.Duration, m.Width, m.Height, m.ThumbPath, m.LocalPath, boolInt(m.Downloaded))
 		if err != nil {
 			return err
 		}
@@ -302,7 +330,7 @@ func (s *Store) ReplaceMedia(ctx context.Context, accountID, chatID string, item
 }
 
 func (s *Store) Media(ctx context.Context, accountID, chatID string) ([]domain.Media, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT account_id,chat_id,message_id,media_id,grouped_id,kind,file_name,extension,mime,size,caption,message_date,duration,width,height,thumb_path,local_path,downloaded FROM media WHERE account_id=? AND chat_id=? ORDER BY message_date,message_id`, accountID, chatID)
+	rows, err := s.db.QueryContext(ctx, `SELECT account_id,chat_id,message_id,media_id,topic_id,grouped_id,kind,file_name,extension,mime,size,caption,message_date,duration,width,height,thumb_path,local_path,downloaded FROM media WHERE account_id=? AND chat_id=? ORDER BY message_date,CAST(message_id AS INTEGER)`, accountID, chatID)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +340,7 @@ func (s *Store) Media(ctx context.Context, accountID, chatID string) ([]domain.M
 		var m domain.Media
 		var d string
 		var dl int
-		if err := rows.Scan(&m.AccountID, &m.ChatID, &m.MessageID, &m.MediaID, &m.GroupedID, &m.Kind, &m.FileName, &m.Extension, &m.MIME, &m.Size, &m.Caption, &d, &m.Duration, &m.Width, &m.Height, &m.ThumbPath, &m.LocalPath, &dl); err != nil {
+		if err := rows.Scan(&m.AccountID, &m.ChatID, &m.MessageID, &m.MediaID, &m.TopicID, &m.GroupedID, &m.Kind, &m.FileName, &m.Extension, &m.MIME, &m.Size, &m.Caption, &d, &m.Duration, &m.Width, &m.Height, &m.ThumbPath, &m.LocalPath, &dl); err != nil {
 			return nil, err
 		}
 		m.Date = parseTime(d)
@@ -321,11 +349,18 @@ func (s *Store) Media(ctx context.Context, accountID, chatID string) ([]domain.M
 	}
 	return out, rows.Err()
 }
-func (s *Store) MediaPage(ctx context.Context, accountID, chatID string, offset, limit int) ([]domain.Media, error) {
+func (s *Store) MediaPage(ctx context.Context, accountID, chatID string, offset, limit int, topics ...string) ([]domain.Media, error) {
+	topic := ""
+	if len(topics) > 0 {
+		topic = topics[0]
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT account_id,chat_id,message_id,media_id,grouped_id,kind,file_name,extension,mime,size,caption,message_date,duration,width,height,thumb_path,local_path,downloaded FROM media WHERE account_id=? AND chat_id=? ORDER BY message_date DESC,message_id DESC LIMIT ? OFFSET ?`, accountID, chatID, limit, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT account_id,chat_id,message_id,media_id,topic_id,grouped_id,kind,file_name,extension,mime,size,caption,message_date,duration,width,height,thumb_path,local_path,downloaded FROM media WHERE account_id=? AND chat_id=? AND (?='' OR topic_id=?) ORDER BY message_date DESC,CAST(message_id AS INTEGER) DESC LIMIT ? OFFSET ?`, accountID, chatID, topic, topic, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +370,7 @@ func (s *Store) MediaPage(ctx context.Context, accountID, chatID string, offset,
 		var m domain.Media
 		var d string
 		var dl int
-		if err := rows.Scan(&m.AccountID, &m.ChatID, &m.MessageID, &m.MediaID, &m.GroupedID, &m.Kind, &m.FileName, &m.Extension, &m.MIME, &m.Size, &m.Caption, &d, &m.Duration, &m.Width, &m.Height, &m.ThumbPath, &m.LocalPath, &dl); err != nil {
+		if err := rows.Scan(&m.AccountID, &m.ChatID, &m.MessageID, &m.MediaID, &m.TopicID, &m.GroupedID, &m.Kind, &m.FileName, &m.Extension, &m.MIME, &m.Size, &m.Caption, &d, &m.Duration, &m.Width, &m.Height, &m.ThumbPath, &m.LocalPath, &dl); err != nil {
 			return nil, err
 		}
 		m.Date = parseTime(d)
@@ -455,7 +490,7 @@ func (s *Store) UpdateJob(ctx context.Context, j domain.Job) error {
 	return err
 }
 func (s *Store) UpdateJobItem(ctx context.Context, it domain.JobItem) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET staging_path=?,state=?,attempts=?,error=? WHERE job_id=? AND chat_id=? AND message_id=?`, it.StagingPath, it.State, it.Attempts, it.Error, it.JobID, it.ChatID, it.MessageID)
+	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET target_path=?,staging_path=?,state=?,attempts=?,error=? WHERE job_id=? AND chat_id=? AND message_id=?`, it.TargetPath, it.StagingPath, it.State, it.Attempts, it.Error, it.JobID, it.ChatID, it.MessageID)
 	return err
 }
 func (s *Store) Jobs(ctx context.Context) ([]domain.Job, error) {
@@ -476,6 +511,22 @@ func (s *Store) Jobs(ctx context.Context) ([]domain.Job, error) {
 		out = append(out, j)
 	}
 	return out, rows.Err()
+}
+
+// Running processes do not survive a worker restart. Keep their fixed items resumable.
+func (s *Store) RecoverJobs(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE job_items SET state='queued',error='' WHERE state='downloading' AND job_id IN (SELECT id FROM jobs WHERE state='running')`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='paused',error='程序已重新启动，可恢复任务',updated_at=? WHERE state='running'`, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) Job(ctx context.Context, id string) (domain.Job, []domain.JobItem, error) {
 	var j domain.Job

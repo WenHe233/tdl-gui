@@ -1,0 +1,339 @@
+.conversation-header {
+  height: auto;
+  min-height: 66px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.header-actions {
+  flex-wrap: wrap;
+}
+.selection-toolbar {
+  background: #172533;
+  border-top: 1px solid #2b3d4f;
+  padding: 10px 16px;
+  font-size: 12px;
+  display: grid;
+  gap: 8px;
+}
+.selection-toolbar > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.selection-toolbar span {
+  color: #9fb0c0;
+}
+.selection-toolbar button,
+.selection-toolbar select,
+.operation-banner button,
+.media-actions button,
+.job-details button {
+  border: 1px solid #3a5066;
+  border-radius: 6px;
+  background: #23374a;
+  color: #e8f2fa;
+  padding: 6px 9px;
+}
+.selection-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.operation-banner {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  background: #1d3d57;
+  padding: 9px 16px;
+  font-size: 13px;
+}
+.operation-banner button {
+  margin-left: auto;
+}
+.media-grid {
+  max-height: none;
+}
+.media-entry {
+  position: relative;
+  min-width: 0;
+  border: 2px solid transparent;
+}
+.media-entry.is-selected {
+  border-color: #55aaff;
+  background: #21476b;
+}
+.media-entry .media-tile {
+  width: 100%;
+  height: 200px;
+}
+.media-grid.count-1 .media-tile {
+  height: 290px;
+}
+.media-select {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 21px;
+  height: 21px;
+  accent-color: #3390ec;
+  cursor: pointer;
+}
+.media-actions {
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+.media-actions > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.media-actions button {
+  text-align: center;
+}
+.album-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+}
+.album-select input {
+  width: 17px;
+  height: 17px;
+  accent-color: #3390ec;
+}
+.job-details {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  max-height: 420px;
+  overflow: auto;
+}
+.job-details > div {
+  padding: 10px;
+  background: #111f2d;
+  border-radius: 7px;
+  display: grid;
+  gap: 6px;
+}
+.job-details small {
+  overflow-wrap: anywhere;
+  color: #92a6b7;
+}
+.job-details span {
+  font-size: 12px;
+  color: #9ec7e9;
+}
+.job-details p {
+  color: #ffa4a4;
+  font-size: 12px;
+}
+.job-details button {
+  margin-right: 8px;
+}
+.job-actions {
+  flex-wrap: wrap;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.message-stream {
+  padding: 20px max(16px, 3vw);
+}
+input[type="checkbox"]:focus-visible,
+button:focus-visible {
+  outline: 2px solid #8bc8ff;
+  outline-offset: 3px;
+}
+.update-panel {
+  padding: 14px;
+  background: #112536;
+  border: 1px solid #30485c;
+  border-radius: 8px;
+  margin-bottom: 18px;
+}
+.update-panel h3 {
+  margin: 0 0 10px;
+}
+.update-panel p {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.update-notes {
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.settings-modal {
+  max-height: 90vh;
+  overflow: auto;
+}
+
+@media (max-width: 1150px) {
+  .app-shell {
+    grid-template-columns: 250px minmax(360px, 1fr) 280px;
+  }
+  .header-actions button {
+    padding: 7px 8px;
+    font-size: 12px;
+  }
+}
+
+.message-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 220px;
+  padding: 5px;
+  background: #1f3040;
+  border: 1px solid #3b5369;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px #0009;
+  display: grid;
+  gap: 2px;
+}
+.message-context-menu button {
+  border: 0;
+  border-radius: 6px;
+  color: #e8f2fa;
+  background: transparent;
+  text-align: left;
+  padding: 12px 15px;
+}
+.message-context-menu button:hover {
+  background: #2c4861;
+}
+.filters-panel {
+  display: block !important;
+}
+.media-grid {
+  max-height: none;
+}
+
+/* Selection controls appear only after choosing Select in the message menu. */
+.message-card {
+  border-radius: 12px;
+  box-shadow: 0 2px 7px #0003;
+  max-width: 620px;
+}
+.media-entry {
+  border: 0;
+  isolation: isolate;
+}
+.media-entry.is-selected {
+  background: #203f59;
+  outline: 2px solid #55aaff;
+  outline-offset: -2px;
+}
+.media-select {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 2px solid #d5e3ef;
+  border-radius: 50%;
+  background: #0b1a2b88;
+  box-shadow: 0 1px 5px #0006;
+  z-index: 2;
+  transition: background 0.12s;
+}
+.media-select:checked {
+  background: #4b9ddb;
+  border-color: #fff;
+}
+.media-select:checked:after {
+  content: "✓";
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+}
+.media-entry .media-tile {
+  height: 210px;
+}
+.media-grid.count-1 .media-tile {
+  height: 310px;
+}
+.media-grid.count-3 .media-entry:first-child {
+  grid-column: 1/-1;
+}
+.media-grid.count-3 .media-entry:first-child .media-tile {
+  height: 230px;
+}
+.media-actions {
+  padding: 8px 12px;
+  color: #c6d5e1;
+  font-size: 12px;
+}
+.message-info {
+  padding: 10px 13px 12px;
+}
+.message-info small {
+  font-size: 11px;
+}
+.message-info p {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.album-select {
+  padding: 9px 12px;
+  background: #1d3549;
+  color: #bbd5e8;
+}
+.album-select span {
+  margin-left: auto;
+  color: #7caed1;
+}
+.selection-toolbar {
+  padding: 10px 18px;
+  background: #192d3e;
+  gap: 9px;
+}
+.selection-toolbar strong {
+  font-size: 13px;
+}
+.selection-toolbar button {
+  border: 0;
+  background: transparent;
+  padding: 6px 8px;
+  color: #a3ccec;
+}
+.selection-toolbar .primary {
+  margin-left: auto;
+  border-radius: 7px;
+  padding: 7px 13px;
+}
+.message-context-menu {
+  min-width: 222px;
+  padding: 6px;
+  background: #203343;
+  border-color: #3b536955;
+  border-radius: 10px;
+  box-shadow: 0 10px 32px #0008;
+}
+.message-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  padding: 11px 13px;
+}
+.message-context-menu svg {
+  color: #8eb0cc;
+}
+.confirm-card {
+  border: 1px solid #3a4e5d;
+  box-shadow: 0 16px 50px #0006;
+}
+.confirm-card h3 {
+  font-size: 18px;
+}
+.confirm-card p {
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.media-entry.no-preview .media-tile{height:82px;min-height:82px;display:flex;justify-content:flex-start;padding:18px 20px;background:#21394c}.media-entry.no-preview .media-tile>span{display:grid;place-items:center;width:48px;height:48px;border-radius:12px;background:#2c5270;color:#92c9f1}

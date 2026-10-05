@@ -90,6 +90,9 @@ type ScanOptions struct {
 }
 
 func (s *Service) Scan(ctx context.Context, a domain.Account, o ScanOptions) ([]domain.Media, error) {
+	if !o.From.IsZero() && !o.To.IsZero() && o.From.After(o.To) {
+		return nil, fmt.Errorf("开始时间不能晚于结束时间")
+	}
 	if o.ChatID == "" {
 		return nil, fmt.Errorf("chat id is required")
 	}
@@ -147,6 +150,9 @@ func (s *Service) Scan(ctx context.Context, a domain.Account, o ScanOptions) ([]
 		}
 		m, ok := parseMedia(a.ID, o.ChatID, msg.ID.String(), msg.File, msg.Date, msg.Text, msg.Raw)
 		if ok {
+			if o.TopicID != "" {
+				m.TopicID = o.TopicID
+			}
 			items = append(items, m)
 		}
 	}
@@ -263,7 +269,15 @@ func parseMedia(accountID, chatID, messageID, fileName string, date int64, capti
 		fileName = kind + "_" + messageID + ext
 	}
 	ext := strings.ToLower(filepath.Ext(fileName))
-	return domain.Media{AccountID: accountID, ChatID: chatID, MessageID: messageID, MediaID: mediaID, GroupedID: stringNumberAt(raw, "grouped_id"), Kind: kind, FileName: fileName, Extension: ext, MIME: mime, Size: size, Caption: caption, Date: time.Unix(date, 0), Duration: duration, Width: width, Height: height}, true
+	topic := "0"
+	reply := mapAt(raw, "reply_to")
+	if boolAt(reply, "forum_topic") {
+		topic = stringNumberAt(reply, "reply_to_top_id")
+		if topic == "" || topic == "0" {
+			topic = stringNumberAt(reply, "reply_to_msg_id")
+		}
+	}
+	return domain.Media{TopicID: topic, AccountID: accountID, ChatID: chatID, MessageID: messageID, MediaID: mediaID, GroupedID: stringNumberAt(raw, "grouped_id"), Kind: kind, FileName: fileName, Extension: ext, MIME: mime, Size: size, Caption: caption, Date: time.Unix(date, 0), Duration: duration, Width: width, Height: height}, true
 }
 
 func kindFromFile(mimeType, fileName string) string {

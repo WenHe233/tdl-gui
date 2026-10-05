@@ -83,6 +83,8 @@ func TestExistingFileIsSkipped(t *testing.T) {
 	if err = os.WriteFile(target, []byte("abc"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	m.LocalPath = target
+	m.Downloaded = true
 	plan, err := New(fakeSource{[]domain.Media{m}}).Build(context.Background(), domain.Rule{AccountID: "a", ChatID: "c", RootDir: root}, domain.Account{DisplayName: "a"}, domain.Chat{ID: "c", VisibleName: "c"})
 	if err != nil {
 		t.Fatal(err)
@@ -92,4 +94,14 @@ func TestExistingFileIsSkipped(t *testing.T) {
 	}
 }
 
-func TestLastNSelectsNewestRegardlessOfDownloadOrder(t *testing.T){now:=time.Now();items:=[]domain.Media{{AccountID:"a",ChatID:"c",MessageID:"1",MediaID:"1",Kind:"photo",FileName:"1.jpg",Size:1,Date:now.Add(-2*time.Hour)},{AccountID:"a",ChatID:"c",MessageID:"2",MediaID:"2",Kind:"photo",FileName:"2.jpg",Size:1,Date:now.Add(-time.Hour)},{AccountID:"a",ChatID:"c",MessageID:"3",MediaID:"3",Kind:"photo",FileName:"3.jpg",Size:1,Date:now}};plan,err:=New(fakeSource{items}).Build(context.Background(),domain.Rule{AccountID:"a",ChatID:"c",RootDir:t.TempDir(),LastN:2,Order:"oldest"},domain.Account{DisplayName:"a"},domain.Chat{VisibleName:"c"});if err!=nil{t.Fatal(err)};if plan.SelectedFiles!=2||plan.Items[0].Selected||!plan.Items[1].Selected||!plan.Items[2].Selected{t.Fatalf("unexpected selection: %+v",plan.Items)}}
+func TestLastNSelectsNewestRegardlessOfDownloadOrder(t *testing.T) {
+	now := time.Now()
+	items := []domain.Media{{AccountID: "a", ChatID: "c", MessageID: "1", MediaID: "1", Kind: "photo", FileName: "1.jpg", Size: 1, Date: now.Add(-2 * time.Hour)}, {AccountID: "a", ChatID: "c", MessageID: "2", MediaID: "2", Kind: "photo", FileName: "2.jpg", Size: 1, Date: now.Add(-time.Hour)}, {AccountID: "a", ChatID: "c", MessageID: "3", MediaID: "3", Kind: "photo", FileName: "3.jpg", Size: 1, Date: now}}
+	plan, err := New(fakeSource{items}).Build(context.Background(), domain.Rule{AccountID: "a", ChatID: "c", RootDir: t.TempDir(), LastN: 2, Order: "oldest"}, domain.Account{DisplayName: "a"}, domain.Chat{VisibleName: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SelectedFiles != 2 || plan.Items[0].Selected || !plan.Items[1].Selected || !plan.Items[2].Selected {
+		t.Fatalf("unexpected selection: %+v", plan.Items)
+	}
+}

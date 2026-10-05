@@ -1,4 +1,4 @@
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = "0.1.9")
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = "0.2.0")
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot "set-version.ps1") -Version $Version
@@ -22,6 +22,8 @@ New-Item -ItemType Directory -Force -Path $binDir,$distDir,$portableDir | Out-Nu
 
 Push-Location $projectRoot
 try {
+  go vet ./...
+  if ($LASTEXITCODE -ne 0) { throw "Go vet failed" }
   go test ./...
   if ($LASTEXITCODE -ne 0) { throw "Go tests failed" }
   go build -trimpath -ldflags "-s -w -X main.version=$Version" -o (Join-Path $binDir "tdl-media.exe") ./cmd/tdl-media
@@ -30,6 +32,8 @@ try {
   try {
     npm ci --cache .cache\npm
     if ($LASTEXITCODE -ne 0) { throw "npm dependency installation failed" }
+    npm test
+    if ($LASTEXITCODE -ne 0) { throw "Frontend tests failed" }
     npm run build
     if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
     npm run tauri build -- --no-bundle

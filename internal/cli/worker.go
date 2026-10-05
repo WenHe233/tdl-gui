@@ -20,6 +20,7 @@ import (
 	"github.com/local/tdl-gui/internal/jobs"
 	"github.com/local/tdl-gui/internal/planner"
 	"github.com/local/tdl-gui/internal/preview"
+	"github.com/local/tdl-gui/internal/updates"
 	"github.com/spf13/cobra"
 )
 
@@ -43,10 +44,17 @@ type rpcError struct {
 	Data    any    `json:"data,omitempty"`
 }
 type rpcServer struct {
-	mu   sync.Mutex
-	enc  *json.Encoder
-	app  *app.Application
-	auth *authui.Manager
+	updater        *updates.Service
+	version        string
+	opMu           sync.Mutex
+	operations     map[string]*mediaOperation
+	requests       sync.WaitGroup
+	cancelRequests context.CancelFunc
+	previewMu      sync.RWMutex
+	mu             sync.Mutex
+	enc            *json.Encoder
+	app            *app.Application
+	auth           *authui.Manager
 }
 
 func (r *rpcServer) write(v any) { r.mu.Lock(); defer r.mu.Unlock(); _ = r.enc.Encode(v) }
@@ -58,18 +66,28 @@ func (r *rpcServer) loginEvent(e authui.Event) {
 }
 func (s *rootState) workerCmd() *cobra.Command {
 	return &cobra.Command{Use: "worker", Short: "启动 GUI 使用的 JSON-RPC worker", RunE: func(cmd *cobra.Command, args []string) error {
-		srv := &rpcServer{enc: json.NewEncoder(os.Stdout)}
+		executable, e := os.Executable()
+		if e != nil {
+			return e
+		}
+		srv := &rpcServer{enc: json.NewEncoder(os.Stdout), version: s.version, updater: updates.New(s.version, filepath.Dir(executable))}
 		a, e := app.Open(s.dataDir, srv.event)
 		if e != nil {
 			return e
 		}
 		defer a.Close()
+		if e = a.Store.RecoverJobs(cmd.Context()); e != nil {
+			return e
+		}
 		srv.app = a
 		srv.auth = authui.New(a.Store, a.Paths.TDLStorage, srv.loginEvent, a.Runner)
 		return srv.serve(cmd.Context(), os.Stdin)
 	}}
 }
 func (r *rpcServer) serve(ctx context.Context, in io.Reader) error {
+	ctx, cancel := context.WithCancel(ctx)
+	r.cancelRequests = cancel
+	defer func() { cancel(); r.requests.Wait(); r.auth.Shutdown(); _ = r.app.Jobs.Shutdown(context.Background()) }()
 	scan := bufio.NewScanner(in)
 	scan.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for scan.Scan() {
@@ -78,14 +96,23 @@ func (r *rpcServer) serve(ctx context.Context, in io.Reader) error {
 			r.write(rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: "Parse error"}})
 			continue
 		}
-		result, err := r.call(ctx, req.Method, req.Params)
-		res := rpcResponse{JSONRPC: "2.0", ID: req.ID}
-		if err != nil {
-			res.Error = &rpcError{Code: -32000, Message: err.Error()}
-		} else {
-			res.Result = result
+		handle := func(req rpcRequest) {
+			result, err := r.call(ctx, req.Method, req.Params)
+			res := rpcResponse{JSONRPC: "2.0", ID: req.ID}
+			if err != nil {
+				res.Error = &rpcError{Code: -32000, Message: err.Error()}
+			} else {
+				res.Result = result
+			}
+			r.write(res)
 		}
-		r.write(res)
+		switch req.Method {
+		case "chats.avatars", "media.thumbnail", "media.thumbnails", "chats.refresh", "media.scan", "app.update.check", "app.update.prepare", "cache.clear", "engine.install":
+			r.requests.Add(1)
+			go func(req rpcRequest) { defer r.requests.Done(); handle(req) }(req)
+		default:
+			handle(req)
+		}
 	}
 	return scan.Err()
 }
@@ -112,11 +139,29 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if v, e := r.app.Engine.Active(ctx); e == nil {
 			eng = v
 		}
-		return map[string]any{"protocolVersion": domain.ProtocolVersion, "settings": r.app.Settings, "accounts": accounts, "activeAccount": active, "engine": eng, "rules": rules, "jobs": js}, nil
+		return map[string]any{"version": r.version, "updateResult": r.updater.Result(), "protocolVersion": domain.ProtocolVersion, "settings": r.app.Settings, "accounts": accounts, "activeAccount": active, "engine": eng, "rules": rules, "jobs": js}, nil
 	case "app.shutdown":
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		if r.cancelRequests != nil {
+			r.cancelRequests()
+		}
+		r.requests.Wait()
+		r.auth.Shutdown()
 		return true, r.app.Jobs.Shutdown(shutdownCtx)
+	case "app.update.check":
+		return r.updater.Check(ctx)
+	case "app.update.prepare":
+		return r.updater.Prepare(ctx)
+	case "app.update.apply":
+		var p struct {
+			PID  int
+			Path string
+		}
+		if err := decodeParams(raw, &p); err != nil {
+			return nil, err
+		}
+		return true, r.updater.Schedule(p.PID, p.Path)
 	case "engine.latest":
 		return r.app.Engine.Latest(ctx)
 	case "engine.list":
@@ -186,7 +231,10 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 			return nil, e
 		}
 		if _, explicit := fields["proxy"]; explicit {
-			if e := r.app.SetLoginProxy(ctx, p.Proxy); e != nil {
+			r.previewMu.Lock()
+			e := r.app.SetLoginProxy(ctx, p.Proxy)
+			r.previewMu.Unlock()
+			if e != nil {
 				return nil, e
 			}
 		} else if p.Proxy == "" {
@@ -236,12 +284,15 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if len(p.ChatIDs) > 32 {
 			p.ChatIDs = p.ChatIDs[:32]
 		}
-		paths, e := r.app.Preview.Avatars(ctx, p.AccountID, p.ChatIDs)
+		r.previewMu.RLock()
+		previewService := r.app.Preview
+		r.previewMu.RUnlock()
+		paths, e := previewService.Avatars(ctx, p.AccountID, p.ChatIDs)
 		return imageDataMap(paths), e
 	case "media.list":
 		var p struct {
-			AccountID, ChatID string
-			Offset, Limit     int
+			AccountID, ChatID, TopicID string
+			Offset, Limit              int
 		}
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
@@ -250,7 +301,13 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if e != nil {
 			return nil, e
 		}
-		items, e := r.app.Store.MediaPage(ctx, a.ID, p.ChatID, p.Offset, p.Limit)
+		if p.Limit <= 0 || p.Limit > 500 {
+			p.Limit = 100
+		}
+		if p.Offset < 0 {
+			p.Offset = 0
+		}
+		items, e := r.app.Store.MediaPage(ctx, a.ID, p.ChatID, p.Offset, p.Limit, p.TopicID)
 		items = mediaWithImageData(items)
 		return map[string]any{"items": items, "nextOffset": p.Offset + len(items), "hasMore": len(items) == p.Limit}, e
 	case "media.scan":
@@ -274,7 +331,10 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
 		}
-		path, e := r.app.Preview.Thumbnail(ctx, p.AccountID, p.ChatID, p.MessageID)
+		r.previewMu.RLock()
+		previewService := r.app.Preview
+		r.previewMu.RUnlock()
+		path, e := previewService.Thumbnail(ctx, p.AccountID, p.ChatID, p.MessageID)
 		return map[string]string{"path": imageData(path)}, e
 	case "media.thumbnails":
 		var p struct {
@@ -284,7 +344,10 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
 		}
-		paths, e := r.app.Preview.Thumbnails(ctx, p.AccountID, p.Items)
+		r.previewMu.RLock()
+		previewService := r.app.Preview
+		r.previewMu.RUnlock()
+		paths, e := previewService.Thumbnails(ctx, p.AccountID, p.Items)
 		return imageDataMap(paths), e
 	case "media.preview":
 		var p struct{ RuleID string }
@@ -312,19 +375,22 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		}
 		return plan, nil
 	case "plans.save":
-		var p domain.DownloadPlan
-		if e := decodeParams(raw, &p); e != nil {
-			return nil, e
-		}
-		selected, bytes := 0, int64(0)
-		for _, item := range p.Items {
-			if item.Selected {
-				selected++
-				bytes += item.Media.Size
-			}
-		}
-		p.SelectedFiles, p.SelectedBytes = selected, bytes
-		return true, r.app.Store.SavePlan(ctx, p)
+		return r.selectPlan(ctx, raw, true)
+	case "plans.select":
+		return r.selectPlan(ctx, raw, false)
+	case "media.previewSelection":
+		return r.selectionPreview(ctx, raw)
+	case "media.previewAfter":
+		return r.afterPreview(ctx, raw)
+	case "media.operation.get":
+		return r.mediaOperation(raw, false)
+	case "media.operation.cancel":
+		return r.mediaOperation(raw, true)
+	case "media.scan.start":
+		return r.startMediaOperation(ctx, func(ctx context.Context) (*domain.DownloadPlan, error) {
+			_, err := r.call(ctx, "media.scan", raw)
+			return nil, err
+		}), nil
 	case "rules.list":
 		return r.app.Store.Rules(ctx)
 	case "rules.save":
@@ -362,12 +428,13 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
 		}
-		go func() {
-			if e := r.app.Jobs.Run(context.Background(), p.ID); e != nil {
-				r.event(jobs.Event{Type: "job.error", JobID: p.ID, Message: e.Error()})
-			}
-		}()
-		return true, nil
+		return true, r.app.Jobs.Start(context.Background(), p.ID)
+	case "jobs.retry":
+		var p struct{ ID string }
+		if e := decodeParams(raw, &p); e != nil {
+			return nil, e
+		}
+		return true, r.app.Jobs.Retry(context.Background(), p.ID)
 	case "jobs.pause":
 		var p struct{ ID string }
 		if e := decodeParams(raw, &p); e != nil {
@@ -389,6 +456,10 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		}
 		return true, r.app.SetConfig(ctx, p.Key, p.Value)
 	case "cache.clear":
+		if e := r.app.Runner.AcquireContext(ctx); e != nil {
+			return nil, e
+		}
+		defer r.app.Runner.Release()
 		return true, r.app.ClearCache(ctx)
 	default:
 		return nil, fmt.Errorf("method %q not found", method)

@@ -1,6 +1,6 @@
 [package]
 name = "tdl-media-gui"
-version = "0.1.9"
+version = "0.2.0"
 description = "Telegram media browser and downloader powered by tdl"
 authors = ["TDL Media contributors"]
 edition = "2021"

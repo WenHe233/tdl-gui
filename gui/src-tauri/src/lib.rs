@@ -24,7 +24,10 @@ fn cli_path() -> Result<PathBuf, String> {
 #[tauri::command]
 fn worker_start(app: tauri::AppHandle, state: State<'_, WorkerState>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|_| "worker lock poisoned")?;
-    if guard.is_some() { return Ok(()); }
+    if let Some(worker) = guard.as_mut() {
+        if worker.child.try_wait().map_err(|e| e.to_string())?.is_none() { return Ok(()); }
+    }
+    guard.take();
     let mut command = Command::new(cli_path()?);
     command.arg("worker").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
@@ -33,7 +36,10 @@ fn worker_start(app: tauri::AppHandle, state: State<'_, WorkerState>) -> Result<
     let stdout = child.stdout.take().ok_or("worker stdout unavailable")?;
     let stderr = child.stderr.take().ok_or("worker stderr unavailable")?;
     let output_app = app.clone();
-    std::thread::spawn(move || for line in BufReader::new(stdout).lines().map_while(Result::ok) { let _ = output_app.emit("worker-message", line); });
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) { let _ = output_app.emit("worker-message", line); }
+        let _ = output_app.emit("worker-stopped", ());
+    });
     let error_app = app.clone();
     std::thread::spawn(move || for line in BufReader::new(stderr).lines().map_while(Result::ok) { let _ = error_app.emit("worker-stderr", line); });
     *guard = Some(WorkerProcess { child, stdin: Some(stdin) });
@@ -57,6 +63,11 @@ fn worker_stop(state: State<'_, WorkerState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn app_process() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({"pid": std::process::id(), "path": env::current_exe().map_err(|e|e.to_string())?}))
+}
+
 #[tauri::command] fn hide_main(app: tauri::AppHandle) -> Result<(), String> { app.get_webview_window("main").ok_or("main window missing")?.hide().map_err(|e| e.to_string()) }
 #[tauri::command] fn quit_app(app: tauri::AppHandle) { app.exit(0); }
 
@@ -66,7 +77,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(WorkerState::default())
-        .invoke_handler(tauri::generate_handler![worker_start, worker_send, worker_stop, hide_main, quit_app])
+        .invoke_handler(tauri::generate_handler![worker_start, worker_send, worker_stop, hide_main, quit_app, app_process])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示 TDL Media", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;

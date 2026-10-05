@@ -56,7 +56,23 @@ func (s *Service) Thumbnail(ctx context.Context, accountID, chatID, messageID st
 // chats. Missing photos and individual Telegram errors are intentionally
 // omitted so one inaccessible peer does not prevent the rest of the list.
 func (s *Service) Avatars(ctx context.Context, accountID string, chatIDs []string) (map[string]string, error) {
-	s.gate.Acquire()
+	cached := make(map[string]string)
+	missing := make([]string, 0, len(chatIDs))
+	for _, id := range chatIDs {
+		path := filepath.Join(s.cache, "avatars", accountID, id+".jpg")
+		if st, err := os.Stat(path); err == nil && !st.IsDir() && st.Size() > 0 {
+			cached[id] = path
+		} else {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return cached, nil
+	}
+	chatIDs = missing
+	if err := s.gate.AcquireContext(ctx); err != nil {
+		return nil, err
+	}
 	defer s.gate.Release()
 	a, err := s.store.Account(ctx, accountID)
 	if err != nil {
@@ -75,7 +91,7 @@ func (s *Service) Avatars(ctx context.Context, accountID string, chatIDs []strin
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string]string)
+	result := cached
 	err = client.Run(ctx, func(ctx context.Context) error {
 		status, e := client.Auth().Status(ctx)
 		if e != nil {
@@ -124,7 +140,9 @@ func (s *Service) Avatars(ctx context.Context, accountID string, chatIDs []strin
 }
 
 func (s *Service) Thumbnails(ctx context.Context, accountID string, refs []Ref) (map[string]string, error) {
-	s.gate.Acquire()
+	if err := s.gate.AcquireContext(ctx); err != nil {
+		return nil, err
+	}
 	defer s.gate.Release()
 	a, err := s.store.Account(ctx, accountID)
 	if err != nil {

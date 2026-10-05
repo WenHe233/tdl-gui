@@ -27,19 +27,46 @@ func (p *Planner) Build(ctx context.Context, rule domain.Rule, account domain.Ac
 	if err != nil {
 		return domain.DownloadPlan{}, err
 	}
+	return BuildMedia(items, rule, account, chat)
+}
+
+func BuildMedia(items []domain.Media, rule domain.Rule, account domain.Account, chat domain.Chat) (domain.DownloadPlan, error) {
+	items = append([]domain.Media(nil), items...)
 	if rule.RecentDays > 0 {
 		rule.From = time.Now().In(location(rule.Timezone)).AddDate(0, 0, -rule.RecentDays)
 	}
-	lastSet:=map[string]bool{}
-	if rule.LastN>0 { candidates:=make([]domain.Media,0,len(items));for _,m:=range items{if rejectReason(m,rule)==""{candidates=append(candidates,m)}};sort.SliceStable(candidates,func(i,j int)bool{return candidates[i].Date.After(candidates[j].Date)});if len(candidates)>rule.LastN{candidates=candidates[:rule.LastN]};for _,m:=range candidates{lastSet[m.MessageID]=true} }
+	lastSet := map[string]bool{}
+	if rule.LastN > 0 {
+		candidates := make([]domain.Media, 0, len(items))
+		for _, m := range items {
+			if rejectReason(m, rule) == "" {
+				candidates = append(candidates, m)
+			}
+		}
+		sort.SliceStable(candidates, func(i, j int) bool { return lessMedia(candidates[j], candidates[i]) })
+		if len(candidates) > rule.LastN {
+			candidates = candidates[:rule.LastN]
+		}
+		for _, m := range candidates {
+			lastSet[m.MessageID] = true
+		}
+	}
 	if rule.Order == "newest" {
-		sort.SliceStable(items, func(i, j int) bool { return items[i].Date.After(items[j].Date) })
+		sort.SliceStable(items, func(i, j int) bool { return lessMedia(items[j], items[i]) })
 	}
 	if rule.Order == "" || rule.Order == "oldest" {
-		sort.SliceStable(items, func(i, j int) bool { return items[i].Date.Before(items[j].Date) })
+		sort.SliceStable(items, func(i, j int) bool { return lessMedia(items[i], items[j]) })
 	}
-	plan := domain.DownloadPlan{ID: idgen.New("plan"), RuleID: rule.ID, AccountID: rule.AccountID, ChatID: rule.ChatID, CreatedAt: time.Now().UTC(), MessageCount: len(items)}
-	uniqueAll:=map[string]bool{};for _,m:=range items{id:=m.MediaID;if id==""{id=m.MessageID};uniqueAll[id]=true};plan.UniqueFiles=len(uniqueAll)
+	plan := domain.DownloadPlan{ID: idgen.New("plan"), RuleID: rule.ID, AccountID: rule.AccountID, ChatID: rule.ChatID, CreatedAt: time.Now().UTC(), From: rule.From, To: rule.To, MessageCount: len(items)}
+	uniqueAll := map[string]bool{}
+	for _, m := range items {
+		id := m.MediaID
+		if id == "" {
+			id = m.MessageID
+		}
+		uniqueAll[id] = true
+	}
+	plan.UniqueFiles = len(uniqueAll)
 	seen := map[string]string{}
 	included := 0
 	var bytes int64
@@ -55,6 +82,13 @@ func (p *Planner) Build(ctx context.Context, rule domain.Rule, account domain.Ac
 			plan.Items = append(plan.Items, pi)
 			continue
 		}
+		if reason := rejectReason(m, rule); reason != "" {
+			pi.Selected = false
+			pi.Status = "filtered"
+			pi.Reason = reason
+			plan.Items = append(plan.Items, pi)
+			continue
+		}
 		if canonical, ok := seen[pi.CanonicalID]; ok {
 			pi.Selected = false
 			pi.Status = "duplicate"
@@ -63,13 +97,6 @@ func (p *Planner) Build(ctx context.Context, rule domain.Rule, account domain.Ac
 			continue
 		}
 		seen[pi.CanonicalID] = m.MessageID
-		if reason := rejectReason(m, rule); reason != "" {
-			pi.Selected = false
-			pi.Status = "filtered"
-			pi.Reason = reason
-			plan.Items = append(plan.Items, pi)
-			continue
-		}
 		name := m.FileName
 		if name == "" {
 			name = "media_" + m.MessageID + m.Extension
@@ -79,6 +106,15 @@ func (p *Planner) Build(ctx context.Context, rule domain.Rule, account domain.Ac
 			return domain.DownloadPlan{}, renderErr
 		}
 		pi.TargetPath = target
+		if existingValid(m, target) {
+			pi.Existing = true
+			pi.Selected = false
+			pi.Status = "existing"
+			pi.Reason = "已有完整文件"
+			plan.ExistingFiles++
+			plan.Items = append(plan.Items, pi)
+			continue
+		}
 		if rule.MaxFiles > 0 && included >= rule.MaxFiles {
 			pi.Selected = false
 			pi.Status = "limit"
@@ -93,15 +129,7 @@ func (p *Planner) Build(ctx context.Context, rule domain.Rule, account domain.Ac
 			plan.Items = append(plan.Items, pi)
 			continue
 		}
-		if existingValid(m, target) {
-			pi.Existing = true
-			pi.Selected = false
-			pi.Status = "existing"
-			pi.Reason = "已有完整文件"
-			plan.ExistingFiles++
-			plan.Items = append(plan.Items, pi)
-			continue
-		}
+
 		included++
 		bytes += m.Size
 		plan.SelectedFiles++
@@ -112,15 +140,14 @@ func (p *Planner) Build(ctx context.Context, rule domain.Rule, account domain.Ac
 }
 
 func rejectReason(m domain.Media, r domain.Rule) string {
+	if r.TopicID != "" && m.TopicID != r.TopicID {
+		return "不属于选定话题，旧索引需重扫"
+	}
 	if !r.From.IsZero() && m.Date.Before(r.From) {
 		return "早于开始时间"
 	}
 	if !r.To.IsZero() {
-		end := r.To
-		if end.Hour() == 0 && end.Minute() == 0 && end.Second() == 0 {
-			end = end.Add(24*time.Hour - time.Nanosecond)
-		}
-		if m.Date.After(end) {
+		if m.Date.After(r.To) {
 			return "晚于结束时间"
 		}
 	}
@@ -165,7 +192,7 @@ func containsFold(v []string, s string) bool {
 	return false
 }
 func existingValid(m domain.Media, target string) bool {
-	candidates := []string{m.LocalPath, target}
+	candidates := []string{m.LocalPath}
 	for _, p := range candidates {
 		if p == "" {
 			continue
@@ -186,6 +213,15 @@ func location(name string) *time.Location {
 }
 
 func ValidateRule(r domain.Rule) error {
+	if !r.From.IsZero() && !r.To.IsZero() && r.From.After(r.To) {
+		return fmt.Errorf("开始时间不能晚于结束时间")
+	}
+	if r.RecentDays < 0 || r.LastN < 0 || r.MinFileSize < 0 || r.MaxFileSize < 0 || r.MaxFiles < 0 || r.MaxTotalSize < 0 {
+		return fmt.Errorf("限制不能为负数")
+	}
+	if r.Order != "" && r.Order != "oldest" && r.Order != "newest" {
+		return fmt.Errorf("无效下载顺序")
+	}
 	if r.AccountID == "" || r.ChatID == "" {
 		return fmt.Errorf("accountId and chatId are required")
 	}
@@ -199,4 +235,48 @@ func ValidateRule(r domain.Rule) error {
 		return fmt.Errorf("minFileSize cannot exceed maxFileSize")
 	}
 	return nil
+}
+
+func lessMedia(a, b domain.Media) bool {
+	if !a.Date.Equal(b.Date) {
+		return a.Date.Before(b.Date)
+	}
+	x, _ := strconv.ParseInt(a.MessageID, 10, 64)
+	y, _ := strconv.ParseInt(b.MessageID, 10, 64)
+	return x < y
+}
+
+// Select only changes eligible selections; paths and metadata remain server-owned.
+func Select(p domain.DownloadPlan, ids []string) (domain.DownloadPlan, error) {
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	p.Items = append([]domain.PlanItem(nil), p.Items...)
+	p.SelectedFiles = 0
+	p.SelectedBytes = 0
+	for i := range p.Items {
+		it := &p.Items[i]
+		id := it.Media.MessageID
+		eligible := it.Status == "selected" || it.Status == "excluded"
+		if wanted[id] && !eligible {
+			return p, fmt.Errorf("消息 %s 不可选", id)
+		}
+		it.Selected = wanted[id]
+		delete(wanted, id)
+		if eligible {
+			it.Status = "excluded"
+			it.Reason = "手动排除"
+			if it.Selected {
+				it.Status = "selected"
+				it.Reason = ""
+				p.SelectedFiles++
+				p.SelectedBytes += it.Media.Size
+			}
+		}
+	}
+	if len(wanted) > 0 {
+		return p, fmt.Errorf("所选消息不在清单中")
+	}
+	return p, nil
 }
