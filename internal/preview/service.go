@@ -17,9 +17,9 @@ import (
 	"github.com/iyear/tdl/core/tmedia"
 	"github.com/iyear/tdl/core/util/tutil"
 	"github.com/iyear/tdl/pkg/kv"
-	"github.com/iyear/tdl/pkg/tclient"
 	"github.com/local/tdl-gui/internal/domain"
 	tdlrunner "github.com/local/tdl-gui/internal/tdl"
+	tclient "github.com/local/tdl-gui/internal/tgclient"
 )
 
 type Store interface {

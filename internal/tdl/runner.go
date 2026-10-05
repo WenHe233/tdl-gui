@@ -21,15 +21,30 @@ type Runner struct {
 	proxy      string
 	ntp        string
 	home       string
-	gate       *sync.Mutex
+	gate       chan struct{}
+	networkMu  sync.RWMutex
 }
 
 func New(executable func(context.Context) (string, error), storage, proxy, ntp string) *Runner {
-	return &Runner{executable: executable, storage: storage, proxy: proxy, ntp: ntp, home: filepath.Join(filepath.Dir(storage), "home"), gate: &sync.Mutex{}}
+	return &Runner{executable: executable, storage: storage, proxy: proxy, ntp: ntp, home: filepath.Join(filepath.Dir(storage), "home"), gate: make(chan struct{}, 1)}
 }
-func (r *Runner) Acquire() { r.gate.Lock() }
-func (r *Runner) Release() { r.gate.Unlock() }
+func (r *Runner) Acquire() { r.gate <- struct{}{} }
+func (r *Runner) Release() { <-r.gate }
+func (r *Runner) AcquireContext(ctx context.Context) error {
+	select {
+	case r.gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			r.Release()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 func (r *Runner) Args(namespace string, args ...string) []string {
+	r.networkMu.RLock()
+	defer r.networkMu.RUnlock()
 	base := []string{"--storage", "type=file,path=" + r.storage, "--ns", namespace, "--disable-progress-ps"}
 	if r.proxy != "" {
 		base = append(base, "--proxy", r.proxy)
@@ -38,6 +53,11 @@ func (r *Runner) Args(namespace string, args ...string) []string {
 		base = append(base, "--ntp", r.ntp)
 	}
 	return append(base, args...)
+}
+func (r *Runner) SetProxy(proxy string) {
+	r.networkMu.Lock()
+	defer r.networkMu.Unlock()
+	r.proxy = proxy
 }
 func (r *Runner) Command(ctx context.Context, namespace string, args ...string) (*exec.Cmd, error) {
 	path, err := r.executable(ctx)

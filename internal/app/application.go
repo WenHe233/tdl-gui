@@ -77,7 +77,11 @@ func loadSettings(st *store.Store, p Paths) domain.Settings {
 		}
 	}
 	assign("download.root", &s.DownloadRoot)
-	assign("proxy", &s.Proxy)
+	if proxy, err := st.GetSetting(context.Background(), "proxy"); err == nil {
+		s.Proxy = proxy // An explicitly empty setting means direct connection.
+	} else {
+		s.Proxy = systemProxy()
+	}
 	assign("ntp", &s.NTP)
 	assign("reconnect.timeout", &s.ReconnectTimeout)
 	assign("task.delay", &s.TaskDelay)
@@ -103,6 +107,16 @@ func loadSettings(st *store.Store, p Paths) domain.Settings {
 	int64v("min.free.bytes", &s.MinFreeBytes)
 	int64v("cache.max.bytes", &s.CacheMaxBytes)
 	return s
+}
+
+func (a *Application) SetLoginProxy(ctx context.Context, proxy string) error {
+	if err := a.Store.SetSetting(ctx, "proxy", proxy); err != nil {
+		return err
+	}
+	a.Settings.Proxy = proxy
+	a.Runner.SetProxy(proxy)
+	a.Preview = preview.New(a.Store, a.Paths.TDLStorage, a.Paths.Cache, proxy, a.Settings.NTP, a.Settings.CacheMaxBytes, a.Runner)
+	return nil
 }
 
 func (a *Application) SetConfig(ctx context.Context, key, value string) error {

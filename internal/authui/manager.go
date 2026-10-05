@@ -21,10 +21,10 @@ import (
 	"github.com/iyear/tdl/core/storage"
 	"github.com/iyear/tdl/pkg/key"
 	"github.com/iyear/tdl/pkg/kv"
-	"github.com/iyear/tdl/pkg/tclient"
 	"github.com/local/tdl-gui/internal/domain"
 	"github.com/local/tdl-gui/internal/idgen"
 	tdlrunner "github.com/local/tdl-gui/internal/tdl"
+	tclient "github.com/local/tdl-gui/internal/tgclient"
 	"github.com/skip2/go-qrcode"
 )
 
@@ -55,19 +55,21 @@ type StartOptions struct {
 type sessionState struct {
 	cancel context.CancelFunc
 	inputs chan input
+	ready  func()
 }
 type input struct{ kind, value string }
 type Manager struct {
-	store       Store
-	storagePath string
-	emit        func(Event)
-	mu          sync.Mutex
-	sessions    map[string]*sessionState
-	gate        *tdlrunner.Runner
+	store          Store
+	storagePath    string
+	emit           func(Event)
+	mu             sync.Mutex
+	sessions       map[string]*sessionState
+	gate           *tdlrunner.Runner
+	startupTimeout time.Duration
 }
 
 func New(store Store, storagePath string, emit func(Event), gate *tdlrunner.Runner) *Manager {
-	return &Manager{store: store, storagePath: storagePath, emit: emit, sessions: map[string]*sessionState{}, gate: gate}
+	return &Manager{store: store, storagePath: storagePath, emit: emit, sessions: map[string]*sessionState{}, gate: gate, startupTimeout: 45 * time.Second}
 }
 
 func (m *Manager) Start(parent context.Context, o StartOptions) (string, error) {
@@ -79,13 +81,21 @@ func (m *Manager) Start(parent context.Context, o StartOptions) (string, error) 
 		o.Method = "qr"
 	}
 	id := idgen.New("login")
-	ctx, cancel := context.WithCancel(parent)
-	st := &sessionState{cancel: cancel, inputs: make(chan input, 2)}
+	ctx, cancelCause := context.WithCancelCause(parent)
+	cancel := func() { cancelCause(context.Canceled) }
+	timer := time.AfterFunc(m.startupTimeout, func() {
+		cancelCause(errors.New("登录准备超时：未能在 45 秒内取得二维码或登录提示。请检查代理是否允许本程序连接 Telegram；TUN 不通时可填写 HTTP/SOCKS5 代理地址后重试，并检查系统时间。"))
+	})
+	st := &sessionState{cancel: cancel, inputs: make(chan input, 2), ready: func() { timer.Stop() }}
 	m.mu.Lock()
 	m.sessions[id] = st
 	m.mu.Unlock()
 	go func() {
+		defer timer.Stop()
 		err := m.run(ctx, id, a, o, st)
+		if ctx.Err() != nil {
+			err = context.Cause(ctx)
+		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			m.emit(Event{Type: "login.error", LoginID: id, Error: err.Error()})
 		}
@@ -121,8 +131,16 @@ func (m *Manager) Cancel(id string) bool {
 }
 
 func (m *Manager) run(ctx context.Context, loginID string, a domain.Account, o StartOptions, st *sessionState) error {
-	m.gate.Acquire()
+	m.emit(Event{Type: "login.status", LoginID: loginID, Prompt: "正在等待登录连接…"})
+	if err := m.gate.AcquireContext(ctx); err != nil {
+		return err
+	}
 	defer m.gate.Release()
+	prompt := "正在直连 Telegram…"
+	if o.Proxy != "" {
+		prompt = "正在通过代理连接 Telegram…"
+	}
+	m.emit(Event{Type: "login.status", LoginID: loginID, Prompt: prompt})
 	switch o.Method {
 	case "desktop":
 		return m.importDesktop(ctx, loginID, a, o, st)
@@ -154,6 +172,7 @@ func (m *Manager) qr(ctx context.Context, loginID string, a domain.Account, o St
 		return err
 	}
 	return c.Run(ctx, func(ctx context.Context) error {
+		m.emit(Event{Type: "login.status", LoginID: loginID, Prompt: "已连接 Telegram，正在请求二维码…"})
 		// Auth handles migration after a QR code is accepted, but Telegram can also
 		// request migration while exporting the first token. Retry the whole flow on
 		// the requested DC so that this implementation detail never leaks into the UI.
@@ -163,6 +182,7 @@ func (m *Manager) qr(ctx context.Context, loginID string, a domain.Account, o St
 				if e != nil {
 					return e
 				}
+				st.ready()
 				m.emit(Event{Type: "login.qr", LoginID: loginID, Prompt: "请用 Telegram 手机客户端扫码", QRCode: "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)})
 				return nil
 			})
@@ -188,6 +208,7 @@ func (m *Manager) qr(ctx context.Context, loginID string, a domain.Account, o St
 			if !tgerr.Is(err, "SESSION_PASSWORD_NEEDED") {
 				return err
 			}
+			st.ready()
 			m.emit(Event{Type: "login.passwordRequired", LoginID: loginID, Prompt: "请输入 Telegram 两步验证密码"})
 			pwd, e := waitInput(ctx, st, "password")
 			if e != nil {
@@ -252,10 +273,12 @@ type channelAuth struct {
 
 func (a *channelAuth) Phone(context.Context) (string, error) { return a.phone, nil }
 func (a *channelAuth) Code(ctx context.Context, _ *tg.AuthSentCode) (string, error) {
+	a.state.ready()
 	a.emit(Event{Type: "login.codeRequired", LoginID: a.loginID, Prompt: "请输入 Telegram 发送的验证码"})
 	return waitInput(ctx, a.state, "code")
 }
 func (a *channelAuth) Password(ctx context.Context) (string, error) {
+	a.state.ready()
 	a.emit(Event{Type: "login.passwordRequired", LoginID: a.loginID, Prompt: "请输入 Telegram 两步验证密码"})
 	return waitInput(ctx, a.state, "password")
 }
@@ -295,6 +318,7 @@ func (m *Manager) importDesktop(ctx context.Context, loginID string, a domain.Ac
 	}
 	chosen := o.DesktopUserID
 	if chosen == "" && len(accounts) > 1 {
+		st.ready()
 		choices := make([]string, 0, len(accounts))
 		for _, x := range accounts {
 			choices = append(choices, strconv.FormatUint(x.Authorization.UserID, 10))

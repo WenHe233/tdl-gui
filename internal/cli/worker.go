@@ -181,7 +181,15 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
 		}
-		if p.Proxy == "" {
+		var fields map[string]json.RawMessage
+		if e := decodeParams(raw, &fields); e != nil {
+			return nil, e
+		}
+		if _, explicit := fields["proxy"]; explicit {
+			if e := r.app.SetLoginProxy(ctx, p.Proxy); e != nil {
+				return nil, e
+			}
+		} else if p.Proxy == "" {
 			p.Proxy = r.app.Settings.Proxy
 		}
 		if p.NTP == "" {
