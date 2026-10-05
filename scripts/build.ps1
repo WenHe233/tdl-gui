@@ -1,4 +1,4 @@
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = "0.1.7")
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = "0.1.8")
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot "set-version.ps1") -Version $Version
@@ -23,13 +23,23 @@ New-Item -ItemType Directory -Force -Path $binDir,$distDir,$portableDir | Out-Nu
 Push-Location $projectRoot
 try {
   go test ./...
+  if ($LASTEXITCODE -ne 0) { throw "Go tests failed" }
   go build -trimpath -ldflags "-s -w -X main.version=$Version" -o (Join-Path $binDir "tdl-media.exe") ./cmd/tdl-media
+  if ($LASTEXITCODE -ne 0) { throw "CLI build failed" }
   Push-Location (Join-Path $projectRoot "gui")
   try {
     npm ci --cache .cache\npm
+    if ($LASTEXITCODE -ne 0) { throw "npm dependency installation failed" }
     npm run build
+    if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
     npm run tauri build -- --no-bundle
+    if ($LASTEXITCODE -ne 0) { throw "GUI build failed" }
   } finally { Pop-Location }
+  $guiExe = Join-Path $projectRoot "gui\src-tauri\target\release\tdl-media-gui.exe"
+  $peBytes = [IO.File]::ReadAllBytes($guiExe)
+  $peOffset = [BitConverter]::ToInt32($peBytes, 0x3c)
+  $subsystem = [BitConverter]::ToUInt16($peBytes, $peOffset + 24 + 68)
+  if ($subsystem -ne 2) { throw "GUI executable must use the Windows GUI subsystem (2), got $subsystem" }
   Copy-Item -Force (Join-Path $binDir "tdl-media.exe") $portableDir
   Copy-Item -Force (Join-Path $projectRoot "gui\src-tauri\target\release\tdl-media-gui.exe") $portableDir
   Copy-Item -Force (Join-Path $projectRoot "README.md") $portableDir

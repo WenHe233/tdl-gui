@@ -65,6 +65,7 @@ func (r *Runner) Run(ctx context.Context, namespace string, args ...string) ([]b
 		return nil, err
 	}
 	var stdout, stderr bytes.Buffer
+	configureBackground(cmd)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err = cmd.Run()
@@ -106,6 +107,7 @@ func (r *Runner) Stream(ctx context.Context, namespace string, stdout, stderr io
 	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	configureBackground(cmd)
 	if err = cmd.Start(); err != nil {
 		r.Release()
 		return nil, err
