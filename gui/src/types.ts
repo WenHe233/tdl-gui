@@ -7,7 +7,11 @@ export type Account = {
   active: boolean;
 };
 export type Topic = { id: string; title: string };
+export type ChatFolder = {id: string; title: string; emoticon?: string; chatIds: string[]; pinnedIds: string[]};
 export type Chat = {
+ lastMessageAt?: string;
+ pinnedOrder?: number;
+ folderIds?: string[];
   accountId: string;
   id: string;
   type: string;
@@ -87,6 +91,7 @@ export type DownloadPlan = {
   items: PlanItem[];
 };
 export type Job = {
+ speedBytesPerSecond?: number;
   id: string;
   planId: string;
   accountId: string;
@@ -102,6 +107,8 @@ export type Job = {
   updatedAt: string;
 };
 export type JobItem = {
+ downloadedBytes?: number;
+ speedBytesPerSecond?: number;
   jobId: string;
   mediaId: string;
   chatId: string;
@@ -113,6 +120,8 @@ export type JobItem = {
   error?: string;
 };
 export type Settings = {
+ chatOrder?: string;
+ mediaOrder?: string;
   dataDir: string;
   downloadRoot: string;
   proxy?: string;
@@ -135,6 +144,7 @@ export type Bootstrap = {
   jobs: Job[];
 };
 export type WorkerEvent = {
+ items?: JobItem[];
   accountId?: string;
   operation?: MediaOperation;
   type: string;

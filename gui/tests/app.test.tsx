@@ -231,3 +231,29 @@ it("starts one download only after confirmation and a successful scan",async()=>
   expect(vi.mocked(rpc).mock.calls.find(([m])=>m==="media.previewAfter")?.[1]).toMatchObject({anchorMessageId:"1",rule:{recentDays:0,lastN:0,minMessageId:0,maxMessageId:0}});
   expect(screen.queryByRole("dialog")).toBeNull();
 });
+
+
+it("reloads media in the chosen order and retains selected messages", async () => {
+  render(<App />); fireEvent.click(await screen.findByText("测试聊天A"));
+  fireEvent.contextMenu(await screen.findByRole("button", {name:"预览 A-1.bin"}));
+  fireEvent.click(screen.getByRole("menuitem", {name:"选择消息"}));
+  fireEvent.change(screen.getByLabelText("消息顺序"), {target:{value:"oldest"}});
+  await waitFor(() => expect(vi.mocked(rpc).mock.calls.some(([m,p]: any) => m === "media.list" && p.order === "oldest" && p.offset === 0)).toBe(true));
+  expect(await screen.findByText("加载更新的媒体")).toBeTruthy();
+  expect(screen.getByText("已选 1 项")).toBeTruthy();
+  expect((screen.getByLabelText("下载顺序") as HTMLSelectElement).value).toBe("oldest");
+});
+
+it("keeps account history removal behind an explicit confirmation", async () => {
+  render(<App />); await screen.findByText("测试聊天A");
+  fireEvent.click(screen.getByTitle("添加账户"));
+  fireEvent.change(screen.getByLabelText("账户配置"), {target:{value:"a"}});
+  fireEvent.click(screen.getByRole("button", {name:"删除登录信息"}));
+  expect(screen.getByRole("dialog").textContent).toContain("索引、规则、任务和下载文件保留");
+  fireEvent.click(screen.getByRole("button", {name:"取消",exact:true}));
+  expect(vi.mocked(rpc).mock.calls.some(([m]) => m === "accounts.remove")).toBe(false);
+  fireEvent.click(screen.getByRole("button", {name:"删除登录信息"}));
+  const dialog=screen.getByRole("dialog");
+  fireEvent.click(dialog.querySelector(".danger")!);
+  await waitFor(() => expect(vi.mocked(rpc).mock.calls.filter(([m]) => m === "accounts.remove")).toHaveLength(1));
+});

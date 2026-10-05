@@ -110,7 +110,10 @@ CREATE TABLE IF NOT EXISTS scans (
 	if !found {
 		_, err = s.db.ExecContext(ctx, "ALTER TABLE media ADD COLUMN topic_id TEXT NOT NULL DEFAULT ''")
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return s.migrateBrowsing(ctx)
 }
 
 func (s *Store) SetSetting(ctx context.Context, key, value string) error {
@@ -125,25 +128,43 @@ func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {
 }
 
 func (s *Store) SaveAccount(ctx context.Context, a domain.Account) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	now := time.Now().UTC()
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = now
 	}
 	a.UpdatedAt = now
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO retired_namespaces(namespace) SELECT namespace FROM accounts WHERE id=? AND namespace<>?`, a.ID, a.Namespace); err != nil {
+		return err
+	}
 	if a.Active {
-		if _, err := s.db.ExecContext(ctx, `UPDATE accounts SET active=0`); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET active=0`); err != nil {
 			return err
 		}
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO accounts(id,namespace,display_name,username,phone,user_id,active,created_at,updated_at)
+	result, err := tx.ExecContext(ctx, `INSERT INTO accounts(id,namespace,display_name,username,phone,user_id,active,created_at,updated_at)
 VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET namespace=excluded.namespace,display_name=excluded.display_name,
-username=excluded.username,phone=excluded.phone,user_id=excluded.user_id,active=excluded.active,updated_at=excluded.updated_at`,
+username=excluded.username,phone=excluded.phone,user_id=excluded.user_id,active=excluded.active,updated_at=excluded.updated_at WHERE accounts.removed=0`,
 		a.ID, a.Namespace, a.DisplayName, a.Username, a.Phone, a.UserID, a.Active, formatTime(a.CreatedAt), formatTime(a.UpdatedAt))
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("账户登录信息已删除")
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Accounts(ctx context.Context) ([]domain.Account, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,namespace,display_name,username,phone,user_id,active,created_at,updated_at FROM accounts ORDER BY active DESC,display_name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,namespace,display_name,username,phone,user_id,active,created_at,updated_at FROM accounts WHERE removed=0 ORDER BY active DESC,display_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +189,7 @@ func (s *Store) ActiveAccount(ctx context.Context) (domain.Account, error) {
 	var a domain.Account
 	var active int
 	var c, u string
-	err := s.db.QueryRowContext(ctx, `SELECT id,namespace,display_name,username,phone,user_id,active,created_at,updated_at FROM accounts WHERE active=1 LIMIT 1`).Scan(&a.ID, &a.Namespace, &a.DisplayName, &a.Username, &a.Phone, &a.UserID, &active, &c, &u)
+	err := s.db.QueryRowContext(ctx, `SELECT id,namespace,display_name,username,phone,user_id,active,created_at,updated_at FROM accounts WHERE active=1 AND removed=0 LIMIT 1`).Scan(&a.ID, &a.Namespace, &a.DisplayName, &a.Username, &a.Phone, &a.UserID, &active, &c, &u)
 	a.Active = active == 1
 	a.CreatedAt = parseTime(c)
 	a.UpdatedAt = parseTime(u)
@@ -184,7 +205,7 @@ func (s *Store) SetActiveAccount(ctx context.Context, id string) error {
 	if _, err = tx.ExecContext(ctx, `UPDATE accounts SET active=0`); err != nil {
 		return err
 	}
-	r, err := tx.ExecContext(ctx, `UPDATE accounts SET active=1,updated_at=? WHERE id=?`, formatTime(time.Now().UTC()), id)
+	r, err := tx.ExecContext(ctx, `UPDATE accounts SET active=1,updated_at=? WHERE id=? AND removed=0`, formatTime(time.Now().UTC()), id)
 	if err != nil {
 		return err
 	}
@@ -217,6 +238,11 @@ func (s *Store) UpsertChats(ctx context.Context, chats []domain.Chat) error {
 }
 
 func (s *Store) Chats(ctx context.Context, accountID, query string) ([]domain.Chat, error) {
+	if chats, _, e := s.Directory(ctx, accountID); e == nil {
+		return filterChats(chats, query), nil
+	} else if e != sql.ErrNoRows {
+		return nil, e
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT account_id,id,type,visible_name,username,topics_json FROM chats WHERE account_id=? AND (?='' OR visible_name LIKE '%'||?||'%' OR username LIKE '%'||?||'%') ORDER BY visible_name`, accountID, query, query, query)
 	if err != nil {
 		return nil, err
@@ -235,6 +261,15 @@ func (s *Store) Chats(ctx context.Context, accountID, query string) ([]domain.Ch
 	return out, rows.Err()
 }
 func (s *Store) Chat(ctx context.Context, accountID, id string) (domain.Chat, error) {
+	if chats, _, e := s.Directory(ctx, accountID); e == nil {
+		for _, c := range chats {
+			if c.ID == id {
+				return c, nil
+			}
+		}
+	} else if e != sql.ErrNoRows {
+		return domain.Chat{}, e
+	}
 	var c domain.Chat
 	var topics string
 	err := s.db.QueryRowContext(ctx, `SELECT account_id,id,type,visible_name,username,topics_json FROM chats WHERE account_id=? AND id=?`, accountID, id).Scan(&c.AccountID, &c.ID, &c.Type, &c.VisibleName, &c.Username, &topics)
@@ -247,7 +282,7 @@ func (s *Store) Account(ctx context.Context, id string) (domain.Account, error) 
 	var a domain.Account
 	var active int
 	var c, u string
-	err := s.db.QueryRowContext(ctx, `SELECT id,namespace,display_name,username,phone,user_id,active,created_at,updated_at FROM accounts WHERE id=?`, id).Scan(&a.ID, &a.Namespace, &a.DisplayName, &a.Username, &a.Phone, &a.UserID, &active, &c, &u)
+	err := s.db.QueryRowContext(ctx, `SELECT id,namespace,display_name,username,phone,user_id,active,created_at,updated_at,removed FROM accounts WHERE id=?`, id).Scan(&a.ID, &a.Namespace, &a.DisplayName, &a.Username, &a.Phone, &a.UserID, &active, &c, &u, &a.Removed)
 	a.Active = active == 1
 	a.CreatedAt = parseTime(c)
 	a.UpdatedAt = parseTime(u)
@@ -416,7 +451,7 @@ func (s *Store) SaveRule(ctx context.Context, r domain.Rule) error {
 	return err
 }
 func (s *Store) Rules(ctx context.Context) ([]domain.Rule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM rules ORDER BY updated_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM rules WHERE NOT EXISTS(SELECT 1 FROM accounts WHERE accounts.id=json_extract(rules.payload,'$.accountId') AND removed=1) ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -494,7 +529,7 @@ func (s *Store) UpdateJobItem(ctx context.Context, it domain.JobItem) error {
 	return err
 }
 func (s *Store) Jobs(ctx context.Context) ([]domain.Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,plan_id,account_id,chat_id,state,total_files,done_files,failed_files,total_bytes,done_bytes,error,created_at,updated_at FROM jobs ORDER BY created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,plan_id,account_id,chat_id,state,total_files,done_files,failed_files,total_bytes,done_bytes,error,created_at,updated_at FROM jobs WHERE NOT EXISTS(SELECT 1 FROM accounts WHERE accounts.id=jobs.account_id AND removed=1) ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}

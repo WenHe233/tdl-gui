@@ -246,6 +246,27 @@ func lessMedia(a, b domain.Media) bool {
 	return x < y
 }
 
+// Browsing applies LastN before display order, without download quotas or deduplication.
+func BrowseMedia(items []domain.Media, rule domain.Rule, order string) []domain.Media {
+	if rule.RecentDays > 0 {
+		rule.From = time.Now().In(location(rule.Timezone)).AddDate(0, 0, -rule.RecentDays)
+	}
+	out := []domain.Media{}
+	for _, m := range items {
+		if rejectReason(m, rule) == "" {
+			out = append(out, m)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return lessMedia(out[j], out[i]) })
+	if rule.LastN > 0 && len(out) > rule.LastN {
+		out = out[:rule.LastN]
+	}
+	if order == "oldest" {
+		sort.SliceStable(out, func(i, j int) bool { return lessMedia(out[i], out[j]) })
+	}
+	return out
+}
+
 // Select only changes eligible selections; paths and metadata remain server-owned.
 func Select(p domain.DownloadPlan, ids []string) (domain.DownloadPlan, error) {
 	wanted := make(map[string]bool, len(ids))

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/local/tdl-gui/internal/account"
 	"github.com/local/tdl-gui/internal/catalog"
@@ -47,12 +48,26 @@ func Open(dataDir string, events func(jobs.Event)) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
+	namespaces, err := st.RemovedNamespaces(context.Background())
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	for _, ns := range namespaces {
+		if err = vaultStore.RemoveNamespace(ns); err != nil {
+			st.Close()
+			return nil, err
+		}
+	}
 	settings := loadSettings(st, paths)
 	em := engine.New(paths.Engines, st)
 	runner := tdlrunner.New(func(ctx context.Context) (string, error) { v, err := em.Active(ctx); return v.Path, err }, paths.TDLStorage, settings.Proxy, settings.NTP)
 	a := &Application{Paths: paths, Store: st, Settings: settings, Engine: em, Runner: runner, Vault: vaultStore}
 	a.Accounts = account.New(st, runner)
 	a.Catalog = catalog.New(st, runner, paths.Cache)
+	a.Catalog.Directory = func(ctx context.Context, account domain.Account) ([]domain.Chat, error) {
+		return catalog.RefreshDirectory(ctx, st, runner, paths.TDLStorage, runner.Proxy(), settings.NTP, account)
+	}
 	a.Planner = planner.New(st)
 	a.Preview = preview.New(st, paths.TDLStorage, paths.Cache, settings.Proxy, settings.NTP, settings.CacheMaxBytes, runner)
 	a.Jobs = jobs.New(st, runner, paths.Staging, settings.Retries, settings.FileConcurrency, settings.TaskDelay, settings.MinFreeBytes, events)
@@ -70,12 +85,14 @@ func (a *Application) Close() error {
 func loadSettings(st *store.Store, p Paths) domain.Settings {
 	downloads, _ := os.UserHomeDir()
 	downloads = filepath.Join(downloads, "Downloads", "Telegram Media")
-	s := domain.Settings{DataDir: p.Root, DownloadRoot: downloads, ReconnectTimeout: "5m", TaskDelay: "0s", FileConcurrency: 2, Retries: 3, MinFreeBytes: 1024 * 1024 * 1024, CacheMaxBytes: 500 * 1024 * 1024, LogLevel: "info"}
+	s := domain.Settings{ChatOrder: "recent", MediaOrder: "newest", DataDir: p.Root, DownloadRoot: downloads, ReconnectTimeout: "5m", TaskDelay: "0s", FileConcurrency: 2, Retries: 3, MinFreeBytes: 1024 * 1024 * 1024, CacheMaxBytes: 500 * 1024 * 1024, LogLevel: "info"}
 	assign := func(key string, to *string) {
 		if v, e := st.GetSetting(context.Background(), key); e == nil && v != "" {
 			*to = v
 		}
 	}
+	assign("ui.chat.order", &s.ChatOrder)
+	assign("ui.media.order", &s.MediaOrder)
 	assign("download.root", &s.DownloadRoot)
 	if proxy, err := st.GetSetting(context.Background(), "proxy"); err == nil {
 		s.Proxy = proxy // An explicitly empty setting means direct connection.
@@ -121,6 +138,23 @@ func (a *Application) SetLoginProxy(ctx context.Context, proxy string) error {
 
 func (a *Application) SetConfig(ctx context.Context, key, value string) error {
 	allowed := map[string]bool{"download.root": true, "proxy": true, "ntp": true, "reconnect.timeout": true, "task.delay": true, "file.concurrency": true, "retries": true, "min.free.bytes": true, "cache.max.bytes": true, "log.level": true}
+	if key == "ui.chat.order" {
+		if value != "recent" && value != "name" {
+			return errors.New("无效聊天顺序")
+		}
+		a.Settings.ChatOrder = value
+		return a.Store.SetSetting(ctx, key, value)
+	}
+	if key == "ui.media.order" {
+		if value != "oldest" && value != "newest" {
+			return errors.New("无效消息顺序")
+		}
+		a.Settings.MediaOrder = value
+		return a.Store.SetSetting(ctx, key, value)
+	}
+	if strings.HasPrefix(key, "ui.folder.") {
+		return a.Store.SetSetting(ctx, key, value)
+	}
 	if !allowed[key] {
 		return errors.New("unknown config key")
 	}

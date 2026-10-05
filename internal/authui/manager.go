@@ -53,9 +53,11 @@ type StartOptions struct {
 	NTP             string `json:"ntp,omitempty"`
 }
 type sessionState struct {
-	cancel context.CancelFunc
-	inputs chan input
-	ready  func()
+	accountID string
+	done      chan struct{}
+	cancel    context.CancelFunc
+	inputs    chan input
+	ready     func()
 }
 type input struct{ kind, value string }
 type Manager struct {
@@ -78,6 +80,9 @@ func (m *Manager) Start(parent context.Context, o StartOptions) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	if a.Removed {
+		return "", errors.New("账户登录信息已删除")
+	}
 	if o.Method == "" {
 		o.Method = "qr"
 	}
@@ -87,13 +92,14 @@ func (m *Manager) Start(parent context.Context, o StartOptions) (string, error) 
 	timer := time.AfterFunc(m.startupTimeout, func() {
 		cancelCause(errors.New("登录准备超时：未能在 45 秒内取得二维码或登录提示。请检查代理是否允许本程序连接 Telegram；TUN 不通时可填写 HTTP/SOCKS5 代理地址后重试，并检查系统时间。"))
 	})
-	st := &sessionState{cancel: cancel, inputs: make(chan input, 2), ready: func() { timer.Stop() }}
+	st := &sessionState{accountID: a.ID, done: make(chan struct{}), cancel: cancel, inputs: make(chan input, 2), ready: func() { timer.Stop() }}
 	m.mu.Lock()
 	m.sessions[id] = st
 	m.mu.Unlock()
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
+		defer close(st.done)
 		defer timer.Stop()
 		err := m.run(ctx, id, a, o, st)
 		if ctx.Err() != nil {
@@ -133,12 +139,32 @@ func (m *Manager) Cancel(id string) bool {
 	return false
 }
 
-func (m *Manager) run(ctx context.Context, loginID string, a domain.Account, o StartOptions, st *sessionState) error {
+func (m *Manager) run(ctx context.Context, loginID string, a domain.Account, o StartOptions, st *sessionState) (result error) {
 	m.emit(Event{Type: "login.status", LoginID: loginID, Prompt: "正在等待登录连接…"})
 	if err := m.gate.AcquireContext(ctx); err != nil {
 		return err
 	}
 	defer m.gate.Release()
+	fresh, err := m.store.Account(ctx, a.ID)
+	if err != nil {
+		return err
+	}
+	if fresh.Removed || ctx.Err() != nil {
+		return context.Canceled
+	}
+	// Authenticate into an isolated namespace. A wrong identity must not replace
+	// the credentials used by the account's existing downloads and index.
+	originalNamespace := a.Namespace
+	a.Namespace = "auth_" + loginID
+	defer func() {
+		namespace := a.Namespace
+		if result == nil {
+			namespace = originalNamespace
+		}
+		if err := m.clearNamespace(namespace); err != nil {
+			result = errors.Join(result, err)
+		}
+	}()
 	prompt := "正在直连 Telegram…"
 	if o.Proxy != "" {
 		prompt = "正在通过代理连接 Telegram…"
@@ -252,10 +278,29 @@ func (m *Manager) code(ctx context.Context, loginID string, a domain.Account, o 
 	})
 }
 func (m *Manager) complete(ctx context.Context, loginID string, a domain.Account, user *tg.User) error {
+	fresh, err := m.store.Account(ctx, a.ID)
+	if err != nil {
+		return err
+	}
+	if fresh.Removed || ctx.Err() != nil {
+		return context.Canceled
+	}
+	if fresh.UserID != "" && fresh.UserID != strconv.FormatInt(user.ID, 10) {
+		return errors.New("登录账户与原账户不一致，请添加新账户")
+	}
 	a.UserID = strconv.FormatInt(user.ID, 10)
 	a.Username = user.Username
 	if a.DisplayName == "" {
 		a.DisplayName = strings.TrimSpace(user.FirstName + " " + user.LastName)
+	}
+	if restorer, ok := m.store.(interface {
+		RestoreAccount(context.Context, domain.Account) (domain.Account, error)
+	}); ok {
+		var err error
+		a, err = restorer.RestoreAccount(ctx, a)
+		if err != nil {
+			return err
+		}
 	}
 	if err := m.store.SaveAccount(ctx, a); err != nil {
 		return err
@@ -362,16 +407,17 @@ func (m *Manager) importDesktop(ctx context.Context, loginID string, a domain.Ac
 	if err = kvd.Set(ctx, key.App(), []byte(tclient.AppDesktop)); err != nil {
 		return err
 	}
-	a.UserID = strconv.FormatUint(selected.Authorization.UserID, 10)
-	if err = m.store.SaveAccount(ctx, a); err != nil {
+	client, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: o.Proxy, NTP: o.NTP, ReconnectTimeout: time.Minute}, false)
+	if err != nil {
 		return err
 	}
-	if err = m.store.SetActiveAccount(ctx, a.ID); err != nil {
-		return err
-	}
-	a.Active = true
-	m.emit(Event{Type: "login.completed", LoginID: loginID, Account: &a})
-	return nil
+	return client.Run(ctx, func(ctx context.Context) error {
+		user, err := client.Self(ctx)
+		if err != nil {
+			return err
+		}
+		return m.complete(ctx, loginID, a, user)
+	})
 }
 func defaultDesktopPath() string {
 	if appData := os.Getenv("APPDATA"); appData != "" {
@@ -387,4 +433,43 @@ func (m *Manager) Shutdown() {
 	}
 	m.mu.Unlock()
 	m.wg.Wait()
+}
+
+func (m *Manager) CancelAccount(ctx context.Context, id string) error {
+	m.mu.Lock()
+	var done []chan struct{}
+	for _, s := range m.sessions {
+		if s.accountID == id {
+			s.cancel()
+			done = append(done, s.done)
+		}
+	}
+	m.mu.Unlock()
+	for _, ch := range done {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (m *Manager) clearNamespace(namespace string) error {
+	if _, err := os.Stat(m.storagePath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	file, err := kv.New(kv.DriverFile, map[string]any{"path": m.storagePath})
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	meta, err := file.MigrateTo()
+	if err != nil {
+		return err
+	}
+	delete(meta, namespace)
+	return file.MigrateFrom(meta)
 }

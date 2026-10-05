@@ -78,6 +78,9 @@ func (s *Service) Avatars(ctx context.Context, accountID string, chatIDs []strin
 	if err != nil {
 		return nil, err
 	}
+	if a.Removed {
+		return nil, errors.New("账户登录信息已删除")
+	}
 	storageFile, err := kv.New(kv.DriverFile, map[string]any{"path": s.storagePath})
 	if err != nil {
 		return nil, err
@@ -147,6 +150,9 @@ func (s *Service) Thumbnails(ctx context.Context, accountID string, refs []Ref) 
 	a, err := s.store.Account(ctx, accountID)
 	if err != nil {
 		return nil, err
+	}
+	if a.Removed {
+		return nil, errors.New("账户登录信息已删除")
 	}
 	storageFile, err := kv.New(kv.DriverFile, map[string]any{"path": s.storagePath})
 	if err != nil {

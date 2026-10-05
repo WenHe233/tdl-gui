@@ -31,14 +31,17 @@ type Store interface {
 }
 
 type Event struct {
-	AccountID string          `json:"accountId,omitempty"`
-	Type      string          `json:"type"`
-	JobID     string          `json:"jobId"`
-	Message   string          `json:"message,omitempty"`
-	Job       *domain.Job     `json:"job,omitempty"`
-	Item      *domain.JobItem `json:"item,omitempty"`
+	Items     []domain.JobItem `json:"items,omitempty"`
+	AccountID string           `json:"accountId,omitempty"`
+	Type      string           `json:"type"`
+	JobID     string           `json:"jobId"`
+	Message   string           `json:"message,omitempty"`
+	Job       *domain.Job      `json:"job,omitempty"`
+	Item      *domain.JobItem  `json:"item,omitempty"`
 }
 type Service struct {
+	progressMu  sync.RWMutex
+	progress    map[string]progressSnapshot
 	store       Store
 	runner      *tdl.Runner
 	staging     string
@@ -63,6 +66,9 @@ func New(store Store, runner *tdl.Runner, staging string, retries, concurrency i
 	return &Service{store: store, runner: runner, staging: staging, retries: retries, concurrency: concurrency, delay: delay, minFree: minFree, cancel: map[string]context.CancelFunc{}, cancelled: map[string]bool{}, events: events}
 }
 func (s *Service) emit(e Event) {
+	if e.Type == "job.updated" && e.Job != nil && e.Job.State != "running" {
+		s.clearProgress(e.JobID)
+	}
 	if s.events != nil {
 		if e.Job != nil {
 			e.AccountID = e.Job.AccountID
@@ -114,6 +120,13 @@ func (s *Service) reserve(parent context.Context, id string) (context.Context, c
 	if err != nil {
 		return nil, nil, err
 	}
+	a, accountErr := s.store.Account(parent, j.AccountID)
+	if accountErr != nil {
+		return nil, nil, accountErr
+	}
+	if a.Removed {
+		return nil, nil, fmt.Errorf("请重新登录账户后恢复任务")
+	}
 	if j.State == "cancelled" {
 		return nil, nil, fmt.Errorf("任务已取消")
 	}
@@ -159,6 +172,9 @@ func (s *Service) run(ctx context.Context, id string, failedOnly bool) error {
 	a, err := s.store.Account(context.Background(), j.AccountID)
 	if err != nil {
 		return s.finishError(j, err)
+	}
+	if a.Removed {
+		return s.finishError(j, fmt.Errorf("账户登录信息已删除"))
 	}
 	if ctx.Err() != nil {
 		return s.finishStopped(j)
@@ -223,7 +239,7 @@ func (s *Service) run(ctx context.Context, id string, failedOnly bool) error {
 		}
 		cmd, startErr := s.runner.Stream(ctx, a.Namespace, writer, writer, downloadArgs...)
 		if startErr == nil {
-			err = s.waitWithProgress(cmd, jobDir, j)
+			err = s.waitWithProgress(cmd, jobDir, j, pending)
 		} else {
 			err = startErr
 		}
@@ -309,39 +325,6 @@ func (s *Service) run(ctx context.Context, id string, failedOnly bool) error {
 		return errors.New(j.Error)
 	}
 	return nil
-}
-
-func (s *Service) waitWithProgress(process interface{ Wait() error }, dir string, job domain.Job) error {
-	done := make(chan error, 1)
-	go func() { done <- process.Wait() }()
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case err := <-done:
-			return err
-		case <-ticker.C:
-			snapshot := job
-			snapshot.DoneBytes += stagingBytes(dir)
-			if snapshot.DoneBytes > snapshot.TotalBytes {
-				snapshot.DoneBytes = snapshot.TotalBytes
-			}
-			s.emit(Event{Type: "job.updated", JobID: job.ID, Job: &snapshot})
-		}
-	}
-}
-func stagingBytes(dir string) int64 {
-	entries, _ := os.ReadDir(dir)
-	var total int64
-	for _, entry := range entries {
-		if entry.IsDir() || strings.HasPrefix(entry.Name(), "manifest-") {
-			continue
-		}
-		if info, err := entry.Info(); err == nil {
-			total += info.Size()
-		}
-	}
-	return total
 }
 
 func (s *Service) Pause(id string) bool {
@@ -593,4 +576,44 @@ func (s *Service) finishStopped(j domain.Job) error {
 	}
 	s.emit(Event{Type: "job.updated", JobID: j.ID, Job: &j})
 	return nil
+}
+
+func (s *Service) PauseAccount(ctx context.Context, id string) error {
+	s.mu.Lock()
+	running := []string{}
+	for jobID := range s.cancel {
+		running = append(running, jobID)
+	}
+	s.mu.Unlock()
+	ids := map[string]bool{}
+	for _, jobID := range running {
+		j, _, err := s.store.Job(ctx, jobID)
+		if err != nil {
+			return err
+		}
+		if j.AccountID == id {
+			ids[j.ID] = true
+			s.Pause(j.ID)
+		}
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		s.mu.Lock()
+		active := false
+		for id := range ids {
+			if _, ok := s.cancel[id]; ok {
+				active = true
+			}
+		}
+		s.mu.Unlock()
+		if !active {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }

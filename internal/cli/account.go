@@ -68,15 +68,32 @@ func (s *rootState) accountCmd() *cobra.Command {
 		}
 		return s.print("登录状态有效")
 	}})
-	c.AddCommand(&cobra.Command{Use: "remove ID", Args: oneArg, Short: "删除本地账户索引", RunE: func(cmd *cobra.Command, args []string) error {
+	c.AddCommand(&cobra.Command{Use: "remove ID", Args: oneArg, Short: "删除登录信息并保留历史数据", RunE: func(cmd *cobra.Command, args []string) error {
 		a, e := s.get()
 		if e != nil {
 			return e
 		}
-		if e = a.Store.DeleteAccount(cmd.Context(), args[0]); e != nil {
+		if e = a.Store.RemoveAccount(cmd.Context(), args[0]); e != nil {
 			return e
 		}
-		return s.print(fmt.Sprintf("已删除账户 %s 的本地索引", args[0]))
+		_, e = a.Store.Account(cmd.Context(), args[0])
+		if e != nil {
+			return e
+		}
+		if e = a.Runner.AcquireContext(cmd.Context()); e != nil {
+			return e
+		}
+		defer a.Runner.Release()
+		namespaces, e := a.Store.RemovedNamespaces(cmd.Context())
+		if e != nil {
+			return e
+		}
+		for _, ns := range namespaces {
+			if e = a.Vault.RemoveNamespace(ns); e != nil {
+				return e
+			}
+		}
+		return s.print(fmt.Sprintf("已删除账户 %s 的登录信息，历史数据已保留", args[0]))
 	}})
 	return c
 }

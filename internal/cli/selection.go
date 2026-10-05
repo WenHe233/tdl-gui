@@ -20,18 +20,19 @@ type previewRequest struct {
 }
 
 type mediaOperation struct {
-	ID     string               `json:"operationId"`
-	State  string               `json:"state"`
-	Plan   *domain.DownloadPlan `json:"plan,omitempty"`
-	Error  string               `json:"error,omitempty"`
-	Cancel context.CancelFunc   `json:"-"`
+	AccountID string               `json:"-"`
+	ID        string               `json:"operationId"`
+	State     string               `json:"state"`
+	Plan      *domain.DownloadPlan `json:"plan,omitempty"`
+	Error     string               `json:"error,omitempty"`
+	Cancel    context.CancelFunc   `json:"-"`
 }
 
 func (r *rpcServer) previewContext(ctx context.Context, rule domain.Rule) (domain.Account, domain.Chat, error) {
 	if err := planner.ValidateRule(rule); err != nil {
 		return domain.Account{}, domain.Chat{}, err
 	}
-	a, err := r.app.Store.Account(ctx, rule.AccountID)
+	a, err := r.account(ctx, rule.AccountID)
 	if err != nil {
 		return a, domain.Chat{}, err
 	}
@@ -117,7 +118,7 @@ func (r *rpcServer) afterPreview(ctx context.Context, raw json.RawMessage) (any,
 	if err = planner.ValidateRule(rule); err != nil {
 		return nil, err
 	}
-	return r.startMediaOperation(ctx, func(ctx context.Context) (*domain.DownloadPlan, error) {
+	return r.startMediaOperation(ctx, a.ID, func(ctx context.Context) (*domain.DownloadPlan, error) {
 		items, err := r.app.Catalog.Scan(ctx, a, catalog.ScanOptions{ChatID: c.ID, TopicID: rule.TopicID, From: rule.From, To: rule.To})
 		if err != nil {
 			return nil, err
@@ -150,9 +151,18 @@ func (r *rpcServer) afterPreview(ctx context.Context, raw json.RawMessage) (any,
 	}), nil
 }
 
-func (r *rpcServer) startMediaOperation(parent context.Context, fn func(context.Context) (*domain.DownloadPlan, error)) map[string]string {
+func (r *rpcServer) startMediaOperation(parent context.Context, accountID string, fn func(context.Context) (*domain.DownloadPlan, error)) map[string]string {
 	id := idgen.New("operation")
 	ctx, cancel := context.WithCancel(parent)
+	r.accountMu.Lock()
+	if r.removing[accountID] {
+		cancel()
+	}
+	fresh, e := r.app.Store.Account(ctx, accountID)
+	if e != nil || fresh.Removed {
+		cancel()
+	}
+	defer r.accountMu.Unlock()
 	r.opMu.Lock()
 	if r.operations == nil {
 		r.operations = map[string]*mediaOperation{}
@@ -163,7 +173,7 @@ func (r *rpcServer) startMediaOperation(parent context.Context, fn func(context.
 			delete(r.operations, key)
 		}
 	}
-	r.operations[id] = &mediaOperation{ID: id, State: "running", Cancel: cancel}
+	r.operations[id] = &mediaOperation{AccountID: accountID, ID: id, State: "running", Cancel: cancel}
 	r.opMu.Unlock()
 	r.requests.Add(1)
 	go func() {

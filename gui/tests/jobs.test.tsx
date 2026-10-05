@@ -1,0 +1,21 @@
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, expect, it, vi } from "vitest";
+import { JobsDrawer } from "../src/JobsDrawer";
+import { rpc } from "../src/rpc";
+import type { Job, JobItem, WorkerEvent } from "../src/types";
+const mocks=vi.hoisted(()=>({listeners:new Set<(e:WorkerEvent)=>void>()}));
+vi.mock("../src/rpc",()=>({rpc:vi.fn(),onWorkerEvent:(fn:(e:WorkerEvent)=>void)=>{mocks.listeners.add(fn);return()=>mocks.listeners.delete(fn)}}));
+vi.mock("@tauri-apps/plugin-opener",()=>({openPath:vi.fn(),revealItemInDir:vi.fn()}));
+const job:Job={id:"j",accountId:"a",chatId:"c",planId:"p",state:"running",totalFiles:2,doneFiles:0,failedFiles:0,totalBytes:10000,doneBytes:3000,speedBytesPerSecond:3072,createdAt:"",updatedAt:""};
+const item:JobItem={jobId:"j",chatId:"c",messageId:"1",mediaId:"1",state:"downloading",size:5000,attempts:1,targetPath:"file.bin",downloadedBytes:1000,speedBytesPerSecond:1024};
+beforeEach(()=>{vi.clearAllMocks();mocks.listeners.clear();vi.mocked(rpc).mockResolvedValue({job,items:[item]});});
+it("shows aggregate and item speed, and consumes progress without reloading details",async()=>{
+ const {rerender}=render(<JobsDrawer jobs={[job]} onClose={()=>{}} onError={()=>{}}/>);
+ expect(screen.getByText("总下载速度 3.0 KiB/s")).toBeTruthy();
+ fireEvent.click(screen.getByText("文件详情"));await screen.findByText("file.bin", {selector:"strong"});
+ expect(screen.getByText("1.0 KiB/s")).toBeTruthy();const calls=vi.mocked(rpc).mock.calls.length;
+ act(()=>mocks.listeners.forEach(fn=>fn({type:"job.progress",jobId:"j",job,items:[{...item,downloadedBytes:3000,speedBytesPerSecond:2048}]})));
+ expect(screen.getByText("2.0 KiB/s")).toBeTruthy();expect(vi.mocked(rpc).mock.calls).toHaveLength(calls);
+ rerender(<JobsDrawer jobs={[{...job,state:"paused",speedBytesPerSecond:0}]} onClose={()=>{}} onError={()=>{}}/>);
+ await waitFor(()=>expect(screen.getByText("总下载速度 0 B/s")).toBeTruthy());expect(screen.queryByText("2.0 KiB/s")).toBeNull();
+});

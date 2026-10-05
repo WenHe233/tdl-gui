@@ -140,3 +140,5 @@ func (r *Runner) Stream(ctx context.Context, namespace string, stdout, stderr io
 	}
 	return &Process{cmd: cmd, release: r.Release}, nil
 }
+
+func (r *Runner) Proxy() string { r.networkMu.RLock(); defer r.networkMu.RUnlock(); return r.proxy }

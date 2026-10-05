@@ -1,0 +1,22 @@
+.app-shell{grid-template-columns:72px 280px minmax(340px,1fr) 295px}
+.folder-rail{display:flex;flex-direction:column;overflow-y:auto;min-height:0;background:#101923;border-right:1px solid #0c151e;padding-top:12px}
+.folder-rail button{position:relative;min-height:76px;flex:none;border:0;background:transparent;color:#8195a7;padding:10px 4px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px}
+.folder-rail button:hover{background:#1b2a39;color:#d6e6f2}
+.folder-rail button.active{background:#192c3e;color:#62b5f5}
+.folder-rail button.active:before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:#52a9eb}
+.folder-name{font-size:11px;line-height:1.35;max-width:64px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
+.folder-emoji{font-size:25px;line-height:28px}
+.chat-sort{padding:0 14px 8px;flex:none}
+.chat-sort select{width:100%;border:0;background:#202f3d;color:#aabecd;border-radius:7px;padding:7px 10px;font-size:12px}
+.sync-error{padding:4px 14px 10px;color:#eeb17b;font-size:11px;max-height:80px;overflow:auto;flex:none}
+.sidebar-footer button:first-child{flex-wrap:wrap;row-gap:3px}
+.total-speed{width:100%;font-size:11px;font-variant-numeric:tabular-nums;color:#7fb9df}
+.speed{font-variant-numeric:tabular-nums;color:#8bc9f4;font-size:12px}
+.job-speed{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px}
+.job-details .file-progress{font-variant-numeric:tabular-nums;color:#91b4ce;font-size:12px;display:flex;justify-content:space-between;gap:12px}
+.delete-login,.danger{color:#ffa3a3!important;border:1px solid #775057!important;background:#452c35!important;border-radius:7px;padding:8px 12px}
+.delete-login{margin-top:8px}
+.header-actions select{font-size:12px;max-width:165px}
+@media(max-width:1150px){.app-shell{grid-template-columns:72px 230px minmax(330px,1fr) 260px}.filters-panel{padding:12px}.message-stream{padding:16px}.conversation-header{padding:9px 12px}.header-actions{gap:5px}.header-actions select{padding:7px 8px}.sidebar-footer button{font-size:12px}.chat-row{gap:8px;padding:8px 6px}.chat-row strong{font-size:13px}.avatar{width:42px;height:42px}}
+
+.chat-row>span:last-child{flex:1}.chat-title{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}.chat-title time{font-size:10px;color:#819aae;flex:none}.chat-title strong{min-width:0}

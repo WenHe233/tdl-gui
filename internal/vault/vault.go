@@ -1,9 +1,54 @@
 package vault
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 )
+
+// RemoveNamespace rewrites both copies so a later unlock cannot resurrect it.
+func (v *Vault) RemoveNamespace(namespace string) error {
+	data, err := os.ReadFile(v.plain)
+	if os.IsNotExist(err) {
+		if err = v.Open(); err != nil {
+			return err
+		}
+		data, err = os.ReadFile(v.plain)
+	}
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var namespaces map[string]json.RawMessage
+	if err = json.Unmarshal(data, &namespaces); err != nil {
+		return err
+	}
+	delete(namespaces, namespace)
+	data, err = json.Marshal(namespaces)
+	if err != nil {
+		return err
+	}
+	encrypted, err := protect(data)
+	if err != nil {
+		return err
+	}
+	for _, entry := range []struct {
+		path string
+		data []byte
+	}{{v.protected, encrypted}, {v.plain, data}} {
+		tmp := entry.path + ".remove"
+		if err = os.WriteFile(tmp, entry.data, 0600); err != nil {
+			return err
+		}
+		if err = os.Rename(tmp, entry.path); err != nil {
+			os.Remove(tmp)
+			return err
+		}
+	}
+	return nil
+}
 
 type Vault struct{ plain, protected string }
 

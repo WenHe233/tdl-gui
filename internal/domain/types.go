@@ -5,6 +5,7 @@ import "time"
 const ProtocolVersion = "1.0"
 
 type Account struct {
+	Removed     bool      `json:"removed,omitempty"`
 	ID          string    `json:"id"`
 	Namespace   string    `json:"namespace"`
 	DisplayName string    `json:"displayName"`
@@ -17,12 +18,23 @@ type Account struct {
 }
 
 type Chat struct {
-	AccountID   string  `json:"accountId"`
-	ID          string  `json:"id"`
-	Type        string  `json:"type"`
-	VisibleName string  `json:"visibleName"`
-	Username    string  `json:"username,omitempty"`
-	Topics      []Topic `json:"topics,omitempty"`
+	LastMessageAt time.Time `json:"lastMessageAt,omitempty"`
+	PinnedOrder   int       `json:"pinnedOrder,omitempty"`
+	FolderIDs     []string  `json:"folderIds,omitempty"`
+	AccountID     string    `json:"accountId"`
+	ID            string    `json:"id"`
+	Type          string    `json:"type"`
+	VisibleName   string    `json:"visibleName"`
+	Username      string    `json:"username,omitempty"`
+	Topics        []Topic   `json:"topics,omitempty"`
+}
+
+type ChatFolder struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Emoticon  string   `json:"emoticon,omitempty"`
+	ChatIDs   []string `json:"chatIds"`
+	PinnedIDs []string `json:"pinnedIds"`
 }
 
 type Topic struct {
@@ -108,32 +120,35 @@ type DownloadPlan struct {
 }
 
 type Job struct {
-	ID          string    `json:"id"`
-	PlanID      string    `json:"planId"`
-	AccountID   string    `json:"accountId"`
-	ChatID      string    `json:"chatId"`
-	State       string    `json:"state"`
-	TotalFiles  int       `json:"totalFiles"`
-	DoneFiles   int       `json:"doneFiles"`
-	FailedFiles int       `json:"failedFiles"`
-	TotalBytes  int64     `json:"totalBytes"`
-	DoneBytes   int64     `json:"doneBytes"`
-	Error       string    `json:"error,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	SpeedBytesPerSecond float64   `json:"speedBytesPerSecond"`
+	ID                  string    `json:"id"`
+	PlanID              string    `json:"planId"`
+	AccountID           string    `json:"accountId"`
+	ChatID              string    `json:"chatId"`
+	State               string    `json:"state"`
+	TotalFiles          int       `json:"totalFiles"`
+	DoneFiles           int       `json:"doneFiles"`
+	FailedFiles         int       `json:"failedFiles"`
+	TotalBytes          int64     `json:"totalBytes"`
+	DoneBytes           int64     `json:"doneBytes"`
+	Error               string    `json:"error,omitempty"`
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
 }
 
 type JobItem struct {
-	JobID       string `json:"jobId"`
-	MediaID     string `json:"mediaId"`
-	ChatID      string `json:"chatId"`
-	MessageID   string `json:"messageId"`
-	TargetPath  string `json:"targetPath"`
-	StagingPath string `json:"stagingPath,omitempty"`
-	State       string `json:"state"`
-	Attempts    int    `json:"attempts"`
-	Size        int64  `json:"size"`
-	Error       string `json:"error,omitempty"`
+	DownloadedBytes     int64   `json:"downloadedBytes"`
+	SpeedBytesPerSecond float64 `json:"speedBytesPerSecond"`
+	JobID               string  `json:"jobId"`
+	MediaID             string  `json:"mediaId"`
+	ChatID              string  `json:"chatId"`
+	MessageID           string  `json:"messageId"`
+	TargetPath          string  `json:"targetPath"`
+	StagingPath         string  `json:"stagingPath,omitempty"`
+	State               string  `json:"state"`
+	Attempts            int     `json:"attempts"`
+	Size                int64   `json:"size"`
+	Error               string  `json:"error,omitempty"`
 }
 
 type EngineVersion struct {
@@ -145,6 +160,8 @@ type EngineVersion struct {
 }
 
 type Settings struct {
+	ChatOrder        string `json:"chatOrder"`
+	MediaOrder       string `json:"mediaOrder"`
 	DataDir          string `json:"dataDir"`
 	DownloadRoot     string `json:"downloadRoot"`
 	Proxy            string `json:"proxy,omitempty"`

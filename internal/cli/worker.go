@@ -44,17 +44,20 @@ type rpcError struct {
 	Data    any    `json:"data,omitempty"`
 }
 type rpcServer struct {
-	updater        *updates.Service
-	version        string
-	opMu           sync.Mutex
-	operations     map[string]*mediaOperation
-	requests       sync.WaitGroup
-	cancelRequests context.CancelFunc
-	previewMu      sync.RWMutex
-	mu             sync.Mutex
-	enc            *json.Encoder
-	app            *app.Application
-	auth           *authui.Manager
+	accountMu       sync.Mutex
+	removing        map[string]bool
+	accountRequests map[*accountRequest]bool
+	updater         *updates.Service
+	version         string
+	opMu            sync.Mutex
+	operations      map[string]*mediaOperation
+	requests        sync.WaitGroup
+	cancelRequests  context.CancelFunc
+	previewMu       sync.RWMutex
+	mu              sync.Mutex
+	enc             *json.Encoder
+	app             *app.Application
+	auth            *authui.Manager
 }
 
 func (r *rpcServer) write(v any) { r.mu.Lock(); defer r.mu.Unlock(); _ = r.enc.Encode(v) }
@@ -107,7 +110,7 @@ func (r *rpcServer) serve(ctx context.Context, in io.Reader) error {
 			r.write(res)
 		}
 		switch req.Method {
-		case "chats.avatars", "media.thumbnail", "media.thumbnails", "chats.refresh", "media.scan", "app.update.check", "app.update.prepare", "cache.clear", "engine.install":
+		case "accounts.remove", "chats.avatars", "media.thumbnail", "media.thumbnails", "chats.refresh", "media.scan", "app.update.check", "app.update.prepare", "cache.clear", "engine.install":
 			r.requests.Add(1)
 			go func(req rpcRequest) { defer r.requests.Done(); handle(req) }(req)
 		default:
@@ -122,7 +125,7 @@ func decodeParams(raw json.RawMessage, v any) error {
 	}
 	return json.Unmarshal(raw, v)
 }
-func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+func (r *rpcServer) dispatch(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	switch method {
 	case "app.bootstrap":
 		accounts, e := r.app.Store.Accounts(ctx)
@@ -131,6 +134,9 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		}
 		rules, _ := r.app.Store.Rules(ctx)
 		js, _ := r.app.Store.Jobs(ctx)
+		for i := range js {
+			js[i], _ = r.app.Jobs.WithProgress(js[i], nil)
+		}
 		var active any
 		if a, e := r.app.Store.ActiveAccount(ctx); e == nil {
 			active = a
@@ -193,6 +199,9 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
 		}
+		if _, e := r.account(ctx, p.ID); e != nil {
+			return nil, e
+		}
 		all, _ := r.app.Store.Jobs(ctx)
 		for _, job := range all {
 			if job.State == "running" {
@@ -243,6 +252,9 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if p.NTP == "" {
 			p.NTP = r.app.Settings.NTP
 		}
+		if _, e := r.account(ctx, p.AccountID); e != nil {
+			return nil, e
+		}
 		id, e := r.auth.Start(ctx, p)
 		return map[string]string{"loginId": id}, e
 	case "accounts.login.submit":
@@ -257,14 +269,35 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 			return nil, e
 		}
 		return r.auth.Cancel(p.LoginID), nil
+	case "accounts.remove":
+		var p struct{ ID string }
+		if e := decodeParams(raw, &p); e != nil {
+			return nil, e
+		}
+		return r.removeAccount(ctx, p.ID)
+	case "chats.folders":
+		var p struct{ AccountID string }
+		if e := decodeParams(raw, &p); e != nil {
+			return nil, e
+		}
+		a, e := r.account(ctx, p.AccountID)
+		if e != nil {
+			return nil, e
+		}
+		folders, e := r.app.Store.Folders(ctx, a.ID)
+		selected, _ := r.app.Store.GetSetting(ctx, "ui.folder."+a.ID)
+		return map[string]any{"folders": folders, "selectedFolderId": selected}, e
 	case "chats.list":
-		var p struct{ AccountID, Query string }
+		var p struct{ AccountID, Query, FolderID, Order string }
 		_ = decodeParams(raw, &p)
 		a, e := r.account(ctx, p.AccountID)
 		if e != nil {
 			return nil, e
 		}
-		return r.app.Store.Chats(ctx, a.ID, p.Query)
+		if !validChatOrder(p.Order) {
+			return nil, fmt.Errorf("无效聊天顺序")
+		}
+		return r.app.Store.BrowseChats(ctx, a.ID, p.Query, p.FolderID, p.Order)
 	case "chats.refresh":
 		var p struct{ AccountID string }
 		_ = decodeParams(raw, &p)
@@ -290,26 +323,7 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		paths, e := previewService.Avatars(ctx, p.AccountID, p.ChatIDs)
 		return imageDataMap(paths), e
 	case "media.list":
-		var p struct {
-			AccountID, ChatID, TopicID string
-			Offset, Limit              int
-		}
-		if e := decodeParams(raw, &p); e != nil {
-			return nil, e
-		}
-		a, e := r.account(ctx, p.AccountID)
-		if e != nil {
-			return nil, e
-		}
-		if p.Limit <= 0 || p.Limit > 500 {
-			p.Limit = 100
-		}
-		if p.Offset < 0 {
-			p.Offset = 0
-		}
-		items, e := r.app.Store.MediaPage(ctx, a.ID, p.ChatID, p.Offset, p.Limit, p.TopicID)
-		items = mediaWithImageData(items)
-		return map[string]any{"items": items, "nextOffset": p.Offset + len(items), "hasMore": len(items) == p.Limit}, e
+		return r.browseMedia(ctx, raw)
 	case "media.scan":
 		var p struct {
 			AccountID, ChatID, TopicID string
@@ -387,7 +401,15 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 	case "media.operation.cancel":
 		return r.mediaOperation(raw, true)
 	case "media.scan.start":
-		return r.startMediaOperation(ctx, func(ctx context.Context) (*domain.DownloadPlan, error) {
+		var p struct{ AccountID string }
+		if e := decodeParams(raw, &p); e != nil {
+			return nil, e
+		}
+		a, e := r.account(ctx, p.AccountID)
+		if e != nil {
+			return nil, e
+		}
+		return r.startMediaOperation(ctx, a.ID, func(ctx context.Context) (*domain.DownloadPlan, error) {
 			_, err := r.call(ctx, "media.scan", raw)
 			return nil, err
 		}), nil
@@ -409,13 +431,18 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		}
 		return true, r.app.Store.DeleteRule(ctx, p.ID)
 	case "jobs.list":
-		return r.app.Store.Jobs(ctx)
+		list, e := r.app.Store.Jobs(ctx)
+		for i := range list {
+			list[i], _ = r.app.Jobs.WithProgress(list[i], nil)
+		}
+		return list, e
 	case "jobs.get":
 		var p struct{ ID string }
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
 		}
 		j, it, e := r.app.Store.Job(ctx, p.ID)
+		j, it = r.app.Jobs.WithProgress(j, it)
 		return map[string]any{"job": j, "items": it}, e
 	case "jobs.create":
 		var p struct{ PlanID string }
@@ -428,10 +455,24 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
 		}
+		j, _, e := r.app.Store.Job(ctx, p.ID)
+		if e != nil {
+			return nil, e
+		}
+		if _, e = r.account(ctx, j.AccountID); e != nil {
+			return nil, e
+		}
 		return true, r.app.Jobs.Start(context.Background(), p.ID)
 	case "jobs.retry":
 		var p struct{ ID string }
 		if e := decodeParams(raw, &p); e != nil {
+			return nil, e
+		}
+		j, _, e := r.app.Store.Job(ctx, p.ID)
+		if e != nil {
+			return nil, e
+		}
+		if _, e = r.account(ctx, j.AccountID); e != nil {
 			return nil, e
 		}
 		return true, r.app.Jobs.Retry(context.Background(), p.ID)
@@ -466,10 +507,23 @@ func (r *rpcServer) call(ctx context.Context, method string, raw json.RawMessage
 	}
 }
 func (r *rpcServer) account(ctx context.Context, id string) (domain.Account, error) {
+	var a domain.Account
+	var err error
 	if id != "" {
-		return r.app.Store.Account(ctx, id)
+		a, err = r.app.Store.Account(ctx, id)
+	} else {
+		a, err = r.app.Store.ActiveAccount(ctx)
 	}
-	return r.app.Store.ActiveAccount(ctx)
+	if err != nil {
+		return a, err
+	}
+	r.accountMu.Lock()
+	removing := r.removing[a.ID]
+	r.accountMu.Unlock()
+	if a.Removed || removing {
+		return a, fmt.Errorf("账户登录信息已删除或正在删除，请重新登录")
+	}
+	return a, nil
 }
 
 const maxInlineImageBytes = 2 << 20

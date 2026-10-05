@@ -32,6 +32,7 @@ import type {
   Account,
   Bootstrap,
   Chat,
+  ChatFolder,
   DownloadPlan,
   Engine,
   Job,
@@ -41,6 +42,8 @@ import type {
   MediaOperation,
 } from "./types";
 import "./avatar.css";
+import { FolderRail } from "./FolderRail";
+import { browseChats, speedLabel, speedHint } from "./browsing";
 import { useSelection, RequestScope } from "./selection";
 import { MediaCard } from "./MediaCard";
 import { JobsDrawer } from "./JobsDrawer";
@@ -181,10 +184,26 @@ export default function App() {
   const [active, setActive] = useState<Account>();
   const activeAccountId = useRef<string | undefined>(undefined);
   const [chats, setChats] = useState<Chat[]>([]);
+  const [folders, setFolders] = useState<ChatFolder[]>([]);
+  const [folderId, setFolderId] = useState("all");
+  const [chatOrder, setChatOrder] = useState("recent");
+  const [mediaOrder, setMediaOrder] = useState("newest");
+  const [refreshingChats, setRefreshingChats] = useState(false);
+  const [chatSyncError, setChatSyncError] = useState("");
+  const chatGeneration = useRef(0);
+  const streamRef = useRef<HTMLElement>(null);
+  const chatListRef = useRef<HTMLDivElement>(null);
+  const [removeAccount, setRemoveAccount] = useState<Account>();
+  const [removingAccount, setRemovingAccount] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const mediaOrderRef = useRef(mediaOrder);
+  mediaOrderRef.current = mediaOrder;
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const requestedAvatars = useRef(new Set<string>());
   const [chat, setChat] = useState<Chat>();
   const [media, setMedia] = useState<Media[]>([]);
+  const [indexedMediaCount, setIndexedMediaCount] = useState(0);
+  const removedAccountIds = useRef(new Set<string>());
   const [mediaPreview, setMediaPreview] = useState<Media>();
   const [mediaOffset, setMediaOffset] = useState(0);
   const [hasMoreMedia, setHasMoreMedia] = useState(false);
@@ -195,6 +214,7 @@ export default function App() {
   const [loading, setLoading] = useState("正在启动…");
   const [error, setError] = useState<string>();
   const [login, setLogin] = useState<LoginState>(emptyLogin);
+  const loginRef = useRef(login); loginRef.current = login;
   const [plan, setPlan] = useState<DownloadPlan>();
   const [showPlan, setShowPlan] = useState(false);
   const [showJobs, setShowJobs] = useState(false);
@@ -227,7 +247,7 @@ export default function App() {
     setSelectionMode(false);
     setOnlySelected(false);
     setContextMenu(undefined);
-    setTimeConfirm(undefined);
+    setTimeConfirm(undefined); setScanError("");
   }, [scope]);
   useEffect(() => {
     if (!contextMenu) return;
@@ -263,20 +283,29 @@ export default function App() {
   const refreshBootstrap = async () => {
     const b = await rpc<Bootstrap>("app.bootstrap");
     setBoot(b);
+ setChatOrder(b.settings.chatOrder || "recent");
+ setMediaOrder(b.settings.mediaOrder || "newest");
     setEngine(b.engine);
     setAccounts(b.accounts);
     setActive(b.activeAccount);
     setJobs(b.jobs);
     return b;
   };
-  const loadChats = async (accountId?: string) => {
-    if (!accountId) return;
+  const loadChats = async (accountId: string, generation: number, refresh = false) => {
+    const current = () => activeAccountId.current === accountId && chatGeneration.current === generation;
     try {
-      const list = await rpc<Chat[]>("chats.list", { accountId, query: "" });
-      if (activeAccountId.current === accountId) setChats(list);
+      const list = await rpc<Chat[]>(refresh ? "chats.refresh" : "chats.list", { accountId, query: "" });
+      if (!current()) return;
+      if (Array.isArray(list)) setChats(list);
+      const data = await rpc<{folders: ChatFolder[]; selectedFolderId?: string}>("chats.folders", {accountId});
+      if (!current()) return;
+      const next = Array.isArray(data?.folders) ? data.folders : [];
+      setFolders(next);
+      setFolderId((previous) => {const wanted = refresh ? previous : data?.selectedFolderId || "all"; return wanted === "all" || next.some((f) => f.id === wanted) ? wanted : "all";});
+      if (refresh) setChatSyncError("");
     } catch (e) {
-      setError(String(e));
-    }
+      if (current()) setChatSyncError(`聊天列表更新失败：${String(e)}`);
+    } finally { if (refresh && current()) setRefreshingChats(false); }
   };
   const loadMedia = async (
     c: Chat,
@@ -286,7 +315,8 @@ export default function App() {
       : "",
   ) => {
     const key = `${c.accountId}/${c.id}/${t}`;
-    const token = browserRequests.current.enter(key, !offset);
+    const displayOrder = mediaOrderRef.current;
+    const token = browserRequests.current.enter(`${key}/${displayOrder}`, !offset);
     browserScope.current = key;
     const requestKey = `${token}/${offset}`;
     if (pagePending.current.has(requestKey)) return;
@@ -295,13 +325,16 @@ export default function App() {
     setTopicId(t);
     if (!offset) {
       setMedia([]);
+      setIndexedMediaCount(0);
       setHasMoreMedia(false);
       setMediaOffset(0);
+      if (streamRef.current) streamRef.current.scrollTop = 0;
     }
     setLoading("正在载入媒体索引…");
     try {
       const page = await rpc<{
         items: Media[];
+        indexedCount?: number;
         nextOffset: number;
         hasMore: boolean;
       }>("media.list", {
@@ -310,6 +343,8 @@ export default function App() {
         topicId: t,
         offset,
         limit: 100,
+        order: displayOrder,
+        browseRule: rule.lastN ? {...rule, from: dateISO(rule.from), to: dateISO(rule.to, true)} : undefined,
       });
       if (!browserRequests.current.valid(token)) return;
       setMedia((v) =>
@@ -322,6 +357,7 @@ export default function App() {
             ]
           : page.items,
       );
+      setIndexedMediaCount(page.indexedCount ?? page.nextOffset);
       setMediaOffset(page.nextOffset);
       setHasMoreMedia(page.hasMore);
       const refs = page.items
@@ -386,18 +422,24 @@ export default function App() {
   }, []);
   useEffect(() => {
     activeAccountId.current = active?.id;
-    setAvatars({});
-    requestedAvatars.current.clear();
-    if (active) loadChats(active.id);
+    const generation = ++chatGeneration.current;
+    setAvatars({}); requestedAvatars.current.clear(); setFolders([]); setFolderId("all");setChats([]);setChatSyncError("");
+    if (active) {
+      setRefreshingChats(true);
+      void loadChats(active.id, generation).then(() => {if (chatGeneration.current === generation) void loadChats(active.id, generation, true);});
+    } else setRefreshingChats(false);
   }, [active?.id]);
   useEffect(() => {
     runningJobsRef.current = jobs.filter((j) => j.state === "running");
   }, [jobs]);
 
   const handleEvent = (event: WorkerEvent) => {
+    if (event.accountId && removedAccountIds.current.has(event.accountId)) return;
     if (event.type.startsWith("login.")) {
+      if (!loginRef.current.open || (loginRef.current.loginId && event.loginId && loginRef.current.loginId !== event.loginId)) return;
       if (event.type === "login.completed" && event.account) {
         setLogin(emptyLogin);
+        removedAccountIds.current.delete(event.account.id);
         setActive(event.account);
         refreshBootstrap();
         return;
@@ -432,8 +474,8 @@ export default function App() {
         choices: event.choices,
       }));
     }
-    if (event.type === "job.updated" && event.job)
-      setJobs((v) => [event.job!, ...v.filter((j) => j.id !== event.job!.id)]);
+    if ((event.type === "job.updated" || event.type === "job.progress") && event.job)
+      setJobs((v) => v.some((j) => j.id === event.job!.id) ? v.map((j) => j.id === event.job!.id ? event.job! : j) : [event.job!, ...v]);
     if (event.type === "item.updated" && event.item?.state === "done")
       setMedia((v) =>
         v.map((m) =>
@@ -448,17 +490,8 @@ export default function App() {
     if (event.type === "job.error") setError(event.message);
   };
 
-  const filteredChats = useMemo(() => {
-    const q = query.toLowerCase();
-    return chats.filter(
-      (c) =>
-        c.visibleName.trim() &&
-        (!q ||
-          c.visibleName.toLowerCase().includes(q) ||
-          (c.username || "").toLowerCase().includes(q)),
-    );
-  }, [chats, query]);
-  useEffect(() => setChatWindowStart(0), [query]);
+  const filteredChats = useMemo(() => browseChats(chats, folders, folderId, chatOrder, query), [chats, folders, folderId, chatOrder, query]);
+  useEffect(() => {setChatWindowStart(0); if (chatListRef.current) chatListRef.current.scrollTop = 0;}, [query, folderId, chatOrder]);
   useEffect(() => {
     if (!active) return;
     const ids = filteredChats
@@ -512,12 +545,15 @@ export default function App() {
       if (to && new Date(m.date) > to) return false;
       return true;
     });
-    if (rule.lastN && matches.length > rule.lastN)
-      return [...matches]
-        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-        .slice(0, rule.lastN);
     return matches;
   }, [media, rule, downloadedFilter, onlySelected, selection.selected]);
+  const recentQuery = rule.lastN ? JSON.stringify([rule.lastN,rule.kinds,rule.from,rule.to,rule.recentDays,rule.minFileSize,rule.maxFileSize,rule.minMessageId,rule.maxMessageId,rule.includeExt,rule.excludeExt,rule.includeKeyword,rule.excludeKeyword]) : "";
+  useEffect(() => {
+    if (!chat) return;
+    browserRequests.current.invalidate();
+    const timer = setTimeout(() => void loadMedia(chat, 0, topicId), 150);
+    return () => clearTimeout(timer);
+  }, [mediaOrder, recentQuery]);
   const visibleIds = new Set(filteredMedia.map((m) => m.messageId));
   const grouped = useMemo(() => {
     const out: { key: string; items: Media[] }[] = [];
@@ -553,15 +589,25 @@ export default function App() {
     }
   };
   const refreshChats = async () => {
-    if (!active) return;
-    setLoading("正在从 Telegram 获取聊天列表…");
+    if (!active || refreshingChats) return;
+    setRefreshingChats(true);
+    await loadChats(active.id, ++chatGeneration.current, true);
+  };
+  const savePreference = (key: string, value: string) => void rpc("config.set", {key, value}).catch((e) => setError(String(e)));
+  const chooseFolder = (id: string) => {setFolderId(id);if (active) savePreference(`ui.folder.${active.id}`, id);};
+  const deleteLogin = async () => {
+    if (!removeAccount || removingAccount) return;
+    setRemovingAccount(true);
     try {
-      setChats(await rpc("chats.refresh", { accountId: active.id }));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading("");
-    }
+      removedAccountIds.current.add(removeAccount.id);
+      await rpc("accounts.remove", {id: removeAccount.id});
+      if (active?.id === removeAccount.id) {
+        browserRequests.current.invalidate(); browserScope.current = ""; chatGeneration.current++;
+        setChat(undefined); setMedia([]); setChats([]); setFolders([]); setTopicId(""); setOperation(undefined);setPlan(undefined);setShowPlan(false);setMediaPreview(undefined);
+      }
+      setLogin(emptyLogin); setRemoveAccount(undefined);
+      await refreshBootstrap();
+    } catch (e) {setError(String(e));} finally {setRemovingAccount(false);}
   };
   const temporaryRule = (): Rule => ({
     ...rule,
@@ -639,8 +685,9 @@ export default function App() {
           }
         }
         void loadMedia(operation.chat, 0, operation.topic);
-      } else if (result.state === "failed")
-        setError(result.error || "扫描失败");
+      } else if (result.state === "failed") {
+        setScanError(result.error || "扫描失败"); setError(result.error || "扫描失败");
+      }
     };
     const check = async () => {
       if (checking || done) return;
@@ -673,6 +720,7 @@ export default function App() {
   }, [operation, scope]);
   const scanMedia = async (rescan = false) => {
     if (!active || !chat) return;
+    setScanError("");
     await startOperation("media.scan.start", {
       accountId: active.id,
       chatId: chat.id,
@@ -931,6 +979,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <FolderRail folders={folders} selected={folderId} onSelect={chooseFolder} />
       <aside className="sidebar">
         <div className="account-bar">
           <button className="icon-button">
@@ -963,11 +1012,14 @@ export default function App() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索聊天"
           />
-          <button onClick={refreshChats} title="刷新聊天">
-            <RefreshCw size={16} />
+          <button onClick={refreshChats} disabled={refreshingChats} title="刷新聊天">
+            <RefreshCw size={16} className={refreshingChats ? "spin" : ""} />
           </button>
         </div>
+        <div className="chat-sort"><select aria-label="聊天排序" value={chatOrder} onChange={(e) => {setChatOrder(e.target.value);savePreference("ui.chat.order",e.target.value);}}><option value="recent">最近消息优先</option><option value="name">名称 A–Z</option></select></div>
+        {chatSyncError && <div className="sync-error" role="status">{chatSyncError}</div>}
         <div
+          ref={chatListRef}
           className="chat-list"
           onScroll={(e) =>
             setChatWindowStart(
@@ -993,11 +1045,12 @@ export default function App() {
                 )}
               </span>
               <span>
-                <strong>{c.visibleName}</strong>
+                <span className="chat-title"><strong>{c.visibleName}</strong>{c.lastMessageAt && !c.lastMessageAt.startsWith("0001-") && <time title={new Date(c.lastMessageAt).toLocaleString()}>{new Date(c.lastMessageAt).toLocaleDateString() === new Date().toLocaleDateString() ? new Date(c.lastMessageAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : new Date(c.lastMessageAt).toLocaleDateString([], {month:"2-digit",day:"2-digit"})}</time>}</span>
                 <small>{c.username ? `@${c.username}` : c.type}</small>
               </span>
             </button>
           ))}
+          {active && !!chats.length && !filteredChats.length && <div className="empty-small">{query ? "没有匹配的聊天" : "此分组没有聊天"}</div>}
           {active && !chats.length && (
             <div className="empty-small">刷新以载入聊天列表</div>
           )}
@@ -1006,6 +1059,7 @@ export default function App() {
           <button onClick={() => setShowJobs(true)}>
             <Download size={18} />
             下载任务{runningJobs.length > 0 && <b>{runningJobs.length}</b>}
+            <small className="total-speed" title={speedHint}>{speedLabel(runningJobs.reduce((n,j) => n+(j.speedBytesPerSecond || 0),0))}</small>
           </button>
           <button onClick={() => setShowSettings(true)}>
             <Settings size={18} />
@@ -1023,6 +1077,7 @@ export default function App() {
                 <span>当前已加载 {filteredMedia.length} 条媒体消息</span>
               </div>
               <div className="header-actions">
+                <select aria-label="消息顺序" value={mediaOrder} onChange={(e) => {setMediaOrder(e.target.value);savePreference("ui.media.order",e.target.value);}}><option value="newest">倒序（从新到旧）</option><option value="oldest">正序（从旧到新）</option></select>
                 <select
                   aria-label="下载状态"
                   value={downloadedFilter}
@@ -1150,7 +1205,7 @@ export default function App() {
             </button>
           </div>
         )}
-        <section className="message-stream">
+        <section className="message-stream" ref={streamRef}>
           {!chat ? (
             <Welcome
               engine={engine}
@@ -1194,10 +1249,11 @@ export default function App() {
                 <div className="empty-state">
                   <Archive size={54} />
                   <h3>
-                    {media.length ? "没有符合条件的媒体" : "尚无可显示的媒体"}
+                    {operation ? "正在扫描媒体…" : scanError ? "扫描失败" : (media.length || indexedMediaCount) ? "没有符合条件的媒体" : "尚无可显示的媒体"}
                   </h3>
                   <p>
-                    调整筛选条件，或扫描聊天媒体。旧索引的话题归属需要重新扫描。
+                    {operation ? "扫描完成后显示媒体。" : scanError ? `${scanError}，可点击“扫描新增”重试。` : (media.length || indexedMediaCount) ? "调整筛选条件以显示更多媒体。" : "点击‘扫描新增’读取聊天中的媒体。"}
+                    {topicId && "旧索引缺少话题归属时，点击‘重扫历史’。"}
                   </p>
                 </div>
               )}
@@ -1208,7 +1264,7 @@ export default function App() {
                   onClick={() => loadMedia(chat, mediaOffset, topicId)}
                 >
                   <ChevronDown />
-                  加载更早的媒体
+                  {mediaOrder === "oldest" ? "加载更新的媒体" : "加载更早的媒体"}
                 </button>
               )}
             </>
@@ -1595,6 +1651,7 @@ export default function App() {
           accounts={accounts}
           setState={setLogin}
           onStart={beginLogin}
+          onRemove={(id) => setRemoveAccount(accounts.find((a) => a.id === id))}
           onSubmit={submitLogin}
           onClose={() => {
             if (login.loginId)
@@ -1603,6 +1660,7 @@ export default function App() {
           }}
         />
       )}
+      {removeAccount && <div className="modal-backdrop"><div className="confirm-card" role="dialog" aria-labelledby="remove-title"><h3 id="remove-title">删除登录信息？</h3><p>将从账户列表移除“{removeAccount.displayName}”，并清除本应用保存的登录会话。索引、规则、任务和下载文件保留，重新登录同一 Telegram 账户后可继续使用。</p><p>该账户正在进行的下载会暂停。</p><div><button disabled={removingAccount} onClick={() => setRemoveAccount(undefined)}>取消</button><button className="danger" disabled={removingAccount} onClick={deleteLogin}>{removingAccount ? "正在删除…" : "删除登录信息"}</button></div></div></div>}
       {mediaPreview?.thumbPath && (
         <div
           className="modal-backdrop image-preview"
@@ -1638,7 +1696,7 @@ export default function App() {
       )}
       {showSettings && boot && (
         <SettingsModal
-          version={boot.version || "0.2.0"}
+          version={boot.version || "0.3.0"}
           updateResult={boot.updateResult}
           onUpdate={shutdownApp}
           settings={boot.settings}
@@ -1729,6 +1787,7 @@ function LoginModal({
   onStart,
   onSubmit,
   onClose,
+  onRemove,
 }: {
   state: LoginState;
   accounts: Account[];
@@ -1736,6 +1795,7 @@ function LoginModal({
   onStart: () => void;
   onSubmit: (v: string, k?: string) => void;
   onClose: () => void;
+  onRemove: (id: string) => void;
 }) {
   const [value, setValue] = useState("");
   return (
@@ -1746,6 +1806,7 @@ function LoginModal({
         </button>
         <h2>登录 Telegram</h2>
         <p>凭据只保存在本机，不会进入日志和下载报告。</p>
+        {state.accountId && <button className="delete-login" disabled={state.busy} onClick={() => onRemove(state.accountId!)}>删除登录信息</button>}
         {!state.loginId ? (
           <>
             <label>

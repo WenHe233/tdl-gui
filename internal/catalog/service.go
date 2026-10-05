@@ -25,9 +25,10 @@ type Store interface {
 	SetScanCursor(context.Context, string, string, string, string) error
 }
 type Service struct {
-	store  Store
-	runner *tdl.Runner
-	cache  string
+	Directory func(context.Context, domain.Account) ([]domain.Chat, error)
+	store     Store
+	runner    *tdl.Runner
+	cache     string
 }
 
 func New(store Store, runner *tdl.Runner, cache string) *Service {
@@ -46,6 +47,9 @@ type tdlChat struct {
 }
 
 func (s *Service) RefreshChats(ctx context.Context, a domain.Account) ([]domain.Chat, error) {
+	if s.Directory != nil {
+		return s.Directory(ctx, a)
+	}
 	out, err := s.runner.Run(ctx, a.Namespace, "chat", "ls", "--output", "json")
 	if err != nil {
 		return nil, err

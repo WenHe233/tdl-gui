@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { X } from "lucide-react";
 import { onWorkerEvent, rpc } from "./rpc";
+import { formatBytes, speedLabel, speedHint } from "./browsing";
 import type { Job, JobItem } from "./types";
 
 const states: Record<string, string> = {
@@ -13,6 +14,7 @@ const states: Record<string, string> = {
   cancelled: "已取消",
   done: "已完成",
   downloading: "下载中",
+  verifying: "校验中",
 };
 export function JobsDrawer({
   jobs,
@@ -42,6 +44,11 @@ export function JobsDrawer({
         });
     void load();
     const off = onWorkerEvent((e) => {
+      if (e.jobId === expanded && e.type === "job.progress" && e.items) {
+        const updates = new Map(e.items.map((it) => [it.messageId, it]));
+        setItems((previous) => previous.map((it) => updates.get(it.messageId) || it));
+        return;
+      }
       if (
         e.jobId === expanded &&
         (e.type === "item.updated" || e.type === "job.updated")
@@ -81,6 +88,7 @@ export function JobsDrawer({
           <div>
             <h2>下载任务</h2>
             <p>查看文件结果、恢复或重试</p>
+            <span className="speed" title={speedHint}>总下载速度 {speedLabel(jobs.filter((j) => j.state === "running").reduce((n,j) => n+(j.speedBytesPerSecond || 0),0))}</span>
           </div>
           <button onClick={onClose} aria-label="关闭任务">
             <X />
@@ -105,6 +113,7 @@ export function JobsDrawer({
                   }}
                 />
               </div>
+              <div className="job-speed"><span className="speed">{formatBytes(j.doneBytes)} / {formatBytes(j.totalBytes)}</span><span className="speed" title={speedHint}>{speedLabel(j.state === "running" ? j.speedBytesPerSecond : 0)}</span></div>
               {j.error && <p>{j.error}</p>}
               <div className="job-actions">
                 <button
@@ -156,6 +165,7 @@ export function JobsDrawer({
                     <div key={it.messageId}>
                       <strong>{it.targetPath.split(/[\\/]/).pop()}</strong>
                       <span>{states[it.state] || it.state}</span>
+                      <div className="file-progress"><span>{formatBytes(it.state === "done" ? it.size : it.downloadedBytes || 0)} / {formatBytes(it.size)}</span><span title={speedHint}>{speedLabel(j.state === "running" ? it.speedBytesPerSecond : 0)}</span></div>
                       <small>{it.targetPath}</small>
                       {it.error && <p>{it.error}</p>}
                       {it.state === "done" && (
