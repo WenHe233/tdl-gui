@@ -121,6 +121,21 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 	return err
 }
 
+// SetSettings commits a complete validated settings patch atomically.
+func (s *Store) SetSettings(ctx context.Context, values map[string]string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for key, value := range values {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {
 	var v string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=?`, key).Scan(&v)

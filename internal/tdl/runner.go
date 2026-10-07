@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Engine interface {
@@ -23,10 +24,11 @@ type Runner struct {
 	home       string
 	gate       chan struct{}
 	networkMu  sync.RWMutex
+	reconnect  time.Duration
 }
 
 func New(executable func(context.Context) (string, error), storage, proxy, ntp string) *Runner {
-	return &Runner{executable: executable, storage: storage, proxy: proxy, ntp: ntp, home: filepath.Join(filepath.Dir(storage), "home"), gate: make(chan struct{}, 1)}
+	return &Runner{executable: executable, storage: storage, proxy: proxy, ntp: ntp, reconnect: 5 * time.Minute, home: filepath.Join(filepath.Dir(storage), "home"), gate: make(chan struct{}, 1)}
 }
 func (r *Runner) Acquire() { r.gate <- struct{}{} }
 func (r *Runner) Release() { <-r.gate }
@@ -46,13 +48,13 @@ func (r *Runner) Args(namespace string, args ...string) []string {
 	r.networkMu.RLock()
 	defer r.networkMu.RUnlock()
 	base := []string{"--storage", "type=file,path=" + r.storage, "--ns", namespace, "--disable-progress-ps"}
-	if r.proxy != "" {
-		base = append(base, "--proxy", r.proxy)
-	}
-	if r.ntp != "" {
-		base = append(base, "--ntp", r.ntp)
-	}
+	base = append(base, "--proxy", r.proxy, "--ntp", r.ntp, "--reconnect-timeout", r.reconnect.String())
 	return append(base, args...)
+}
+func (r *Runner) SetNetwork(proxy, ntp string, reconnect time.Duration) {
+	r.networkMu.Lock()
+	defer r.networkMu.Unlock()
+	r.proxy, r.ntp, r.reconnect = proxy, ntp, reconnect
 }
 func (r *Runner) SetProxy(proxy string) {
 	r.networkMu.Lock()

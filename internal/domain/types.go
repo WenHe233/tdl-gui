@@ -161,6 +161,8 @@ type EngineVersion struct {
 }
 
 type Settings struct {
+	FileThreads      int    `json:"fileThreads"`
+	PoolSize         int    `json:"poolSize"`
 	ChatOrder        string `json:"chatOrder"`
 	MediaOrder       string `json:"mediaOrder"`
 	DataDir          string `json:"dataDir"`

@@ -14,7 +14,7 @@ func (s *rootState) configCmd() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return s.print(a.Settings)
+		return s.print(a.SettingsSnapshot())
 	}})
 	c.AddCommand(&cobra.Command{Use: "set KEY VALUE", Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) != 2 {
@@ -29,7 +29,7 @@ func (s *rootState) configCmd() *cobra.Command {
 		if e = a.SetConfig(cmd.Context(), args[0], args[1]); e != nil {
 			return e
 		}
-		return s.print("配置已保存，下一次启动生效")
+		return s.print("配置已保存，后续操作生效")
 	}})
 	return c
 }

@@ -75,7 +75,11 @@ func folderMatches(f *tg.DialogFilter, m dialogMeta) bool {
 
 // RefreshDirectory intentionally projects messages to timestamps before persistence.
 // Neither raw responses nor message text are written to the catalog or logs.
-func RefreshDirectory(ctx context.Context, st *store.Store, gate *tdl.Runner, storagePath, proxy, ntp string, a domain.Account) ([]domain.Chat, error) {
+func RefreshDirectory(ctx context.Context, st *store.Store, gate *tdl.Runner, storagePath, proxy, ntp string, a domain.Account, reconnect ...time.Duration) ([]domain.Chat, error) {
+	timeout := 5 * time.Minute
+	if len(reconnect) > 0 {
+		timeout = reconnect[0]
+	}
 	if err := gate.AcquireContext(ctx); err != nil {
 		return nil, err
 	}
@@ -97,7 +101,7 @@ func RefreshDirectory(ctx context.Context, st *store.Store, gate *tdl.Runner, st
 	if err != nil {
 		return nil, err
 	}
-	client, err := tgclient.New(ctx, tgclient.Options{KV: db, Proxy: proxy, NTP: ntp, ReconnectTimeout: time.Minute}, false)
+	client, err := tgclient.New(ctx, tgclient.Options{KV: db, Proxy: proxy, NTP: ntp, ReconnectTimeout: timeout}, false)
 	if err != nil {
 		return nil, err
 	}

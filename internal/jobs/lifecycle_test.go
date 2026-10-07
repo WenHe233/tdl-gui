@@ -9,12 +9,21 @@ import (
 	"github.com/local/tdl-gui/internal/tdl"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("TDL_JOB_TEST"); mode != "" {
+		if path := os.Getenv("TDL_JOB_ARGS"); path != "" {
+			f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				os.Exit(3)
+			}
+			_ = json.NewEncoder(f).Encode(os.Args)
+			f.Close()
+		}
 		manifest, dir := "", ""
 		for i, arg := range os.Args {
 			if i+1 < len(os.Args) {
@@ -34,6 +43,22 @@ func TestMain(m *testing.M) {
 		b, _ := os.ReadFile(manifest)
 		_ = json.Unmarshal(b, &payload)
 		for _, item := range payload.Messages {
+			if mode == "slow" {
+				path := filepath.Join(dir, fmt.Sprintf("%d_test.bin.tmp", item.ID))
+				f, err := os.Create(path)
+				if err != nil {
+					os.Exit(4)
+				}
+				for n := 0; n < 3; n++ {
+					_, _ = f.Write([]byte("x"))
+					time.Sleep(600 * time.Millisecond)
+				}
+				f.Close()
+				if err = os.Rename(path, strings.TrimSuffix(path, ".tmp")); err != nil {
+					os.Exit(5)
+				}
+				continue
+			}
 			if mode == "partial" && item.ID != 1 {
 				continue
 			}
@@ -185,5 +210,87 @@ func TestMoveNeverReplacesSameSizedFile(t *testing.T) {
 	b, _ := os.ReadFile(dst)
 	if string(b) != "old" {
 		t.Fatal("destination changed")
+	}
+}
+
+func TestChildProcessReportsProgressBeforeFileCloses(t *testing.T) {
+	t.Setenv("TDL_JOB_TEST", "slow")
+	svc, st, _, job, _ := jobFixture(t)
+	var sawLive, sawAggregate, sawZero bool
+	svc.events = func(e Event) {
+		if e.Type == "job.progress" && e.Job != nil {
+			if e.Job.SpeedBytesPerSecond > 0 {
+				sawAggregate = true
+			}
+			if sawAggregate && e.Job.SpeedBytesPerSecond == 0 {
+				sawZero = true
+			}
+			for _, it := range e.Items {
+				if it.State == "downloading" && it.DownloadedBytes > 0 && it.DownloadedBytes < it.Size && it.SpeedBytesPerSecond > 0 {
+					sawLive = true
+				}
+			}
+		}
+	}
+	if err := svc.Run(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !sawLive || !sawAggregate || !sawZero {
+		t.Fatalf("live=%v aggregate=%v reset=%v", sawLive, sawAggregate, sawZero)
+	}
+	result, _, _ := st.Job(context.Background(), job.ID)
+	if result.State != "completed" || result.DoneBytes != result.TotalBytes {
+		t.Fatal(result)
+	}
+}
+
+func TestSettingsSnapshotSurvivesUpdatesAndAutomaticRetries(t *testing.T) {
+	t.Setenv("TDL_JOB_TEST", "partial")
+	path := filepath.Join(t.TempDir(), "args.jsonl")
+	t.Setenv("TDL_JOB_ARGS", path)
+	svc, _, _, job, _ := jobFixture(t)
+	cfg := domain.Settings{FileThreads: 8, FileConcurrency: 4, PoolSize: 8, Retries: 1, TaskDelay: "0s", ReconnectTimeout: "5m"}
+	svc.SettingsSource = func() domain.Settings { return cfg }
+	svc.events = func(e Event) {
+		if e.Type == "job.updated" {
+			cfg.FileThreads = 2
+			cfg.FileConcurrency = 1
+			cfg.Proxy = "socks5://localhost:1080"
+			cfg.Retries = 0
+		}
+	}
+	if err := svc.Run(context.Background(), job.ID); err == nil {
+		t.Fatal("expected partial failure")
+	}
+	t.Setenv("TDL_JOB_TEST", "success")
+	if err := svc.Run(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected two attempts and a resume, got %d", len(lines))
+	}
+	for i, line := range lines {
+		var args []string
+		if err := json.Unmarshal([]byte(line), &args); err != nil {
+			t.Fatal(err)
+		}
+		flags := map[string]string{}
+		for n := 0; n+1 < len(args); n++ {
+			if strings.HasPrefix(args[n], "--") {
+				flags[args[n]] = args[n+1]
+			}
+		}
+		threads, limit, proxy := "8", "4", ""
+		if i == 2 {
+			threads, limit, proxy = "2", "1", "socks5://localhost:1080"
+		}
+		if flags["--threads"] != threads || flags["--limit"] != limit || flags["--proxy"] != proxy || flags["--pool"] != "8" || flags["--reconnect-timeout"] != "5m" || flags["--delay"] != "0s" {
+			t.Fatalf("attempt %d: %v", i, flags)
+		}
 	}
 }

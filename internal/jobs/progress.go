@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -47,13 +48,14 @@ func (m *speedMeter) sample(at time.Time, n int64) float64 {
 	return float64(m.total-first.bytes) / elapsed
 }
 
-// Match only the current manifest. The .tmp and final names represent one file.
-func itemBytes(dir string, items []domain.JobItem) map[string]int64 {
+// Match only the current manifest. Temporary and final names represent one file.
+// Missing/unreadable entries are absent, so a transient failure cannot reset a meter.
+func readProgressFiles(dir string, items []domain.JobItem) (map[string]int64, map[string]bool) {
 	wanted := map[string]int64{}
 	for _, it := range items {
 		wanted[it.MessageID] = it.Size
 	}
-	out := map[string]int64{}
+	values, finished := map[string]int64{}, map[string]bool{}
 	entries, _ := os.ReadDir(dir)
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -64,49 +66,40 @@ func itemBytes(dir string, items []domain.JobItem) map[string]int64 {
 		if !ok || !want {
 			continue
 		}
-		info, err := entry.Info()
+		n, err := liveFileSize(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			continue
 		}
-		n := info.Size()
-		if n > limit {
-			n = limit
+		if !strings.HasSuffix(entry.Name(), ".tmp") && n == limit {
+			finished[id] = true
 		}
-		if n > out[id] {
-			out[id] = n
+		n = min(n, limit)
+		if previous, exists := values[id]; !exists || n > previous {
+			values[id] = n
 		}
 	}
-	return out
+	return values, finished
+}
+func itemBytes(dir string, items []domain.JobItem) map[string]int64 {
+	values, _ := readProgressFiles(dir, items)
+	return values
 }
 
 func (s *Service) sampleProgress(dir string, job domain.Job, items []domain.JobItem, meters map[string]*speedMeter, at time.Time) {
-	values := itemBytes(dir, items)
-	finished := map[string]bool{}
-	entries, _ := os.ReadDir(dir)
-	wanted := map[string]int64{}
-	for _, it := range items {
-		wanted[it.MessageID] = it.Size
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || strings.HasSuffix(entry.Name(), ".tmp") {
-			continue
-		}
-		id, _, ok := strings.Cut(entry.Name(), "_")
-		size, match := wanted[id]
-		if !ok || !match {
-			continue
-		}
-		if info, err := entry.Info(); err == nil && info.Size() == size {
-			finished[id] = true
-		}
-	}
+	values, finished := readProgressFiles(dir, items)
 	snapshot := progressSnapshot{job: job, items: append([]domain.JobItem(nil), items...)}
 	snapshot.job.SpeedBytesPerSecond = 0
+	var transferred int64
 	for i := range snapshot.items {
 		it := &snapshot.items[i]
-		n := values[it.MessageID]
+		meter := meters[it.MessageID]
+		n, sampled := values[it.MessageID]
+		if !sampled {
+			n = meter.last
+		}
 		it.DownloadedBytes = n
-		it.SpeedBytesPerSecond = meters[it.MessageID].sample(at, n)
+		it.SpeedBytesPerSecond = meter.sample(at, n)
+		transferred += meter.total
 		if n == 0 {
 			it.State = "queued"
 		} else {
@@ -117,11 +110,22 @@ func (s *Service) sampleProgress(dir string, job domain.Job, items []domain.JobI
 			it.SpeedBytesPerSecond = 0
 		}
 		snapshot.job.DoneBytes += n
-		snapshot.job.SpeedBytesPerSecond += it.SpeedBytesPerSecond
 	}
-	if snapshot.job.DoneBytes > snapshot.job.TotalBytes {
-		snapshot.job.DoneBytes = snapshot.job.TotalBytes
+	// Keep recently completed file bytes in the aggregate speed window.
+	total := meters[""]
+	if total == nil {
+		total = &speedMeter{}
+		start := at
+		for id, m := range meters {
+			if id != "" && len(m.samples) > 0 && m.samples[0].at.Before(start) {
+				start = m.samples[0].at
+			}
+		}
+		total.reset(start, 0)
+		meters[""] = total
 	}
+	snapshot.job.SpeedBytesPerSecond = total.sample(at, transferred)
+	snapshot.job.DoneBytes = min(snapshot.job.DoneBytes, snapshot.job.TotalBytes)
 	s.progressMu.Lock()
 	if s.progress == nil {
 		s.progress = map[string]progressSnapshot{}
@@ -161,7 +165,7 @@ func (s *Service) WithProgress(job domain.Job, items []domain.JobItem) (domain.J
 	}
 	return job, items
 }
-func (s *Service) waitWithProgress(process interface{ Wait() error }, dir string, job domain.Job, items []domain.JobItem) error {
+func (s *Service) waitWithProgress(process interface{ Wait() error }, dir string, job domain.Job, items []domain.JobItem, meters map[string]*speedMeter) error {
 	done := make(chan error, 1)
 	go func() { done <- process.Wait() }()
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -171,6 +175,7 @@ func (s *Service) waitWithProgress(process interface{ Wait() error }, dir string
 		snapshot, ok := s.progress[job.ID]
 		if ok {
 			snapshot.job.SpeedBytesPerSecond = 0
+			snapshot.items = append([]domain.JobItem(nil), snapshot.items...)
 			for i := range snapshot.items {
 				snapshot.items[i].SpeedBytesPerSecond = 0
 			}
@@ -182,14 +187,6 @@ func (s *Service) waitWithProgress(process interface{ Wait() error }, dir string
 		}
 		s.clearProgress(job.ID)
 	}()
-	initial := itemBytes(dir, items)
-	meters := map[string]*speedMeter{}
-	now := time.Now()
-	for _, it := range items {
-		m := &speedMeter{}
-		m.reset(now, initial[it.MessageID])
-		meters[it.MessageID] = m
-	}
 	for {
 		select {
 		case err := <-done:
@@ -199,4 +196,16 @@ func (s *Service) waitWithProgress(process interface{ Wait() error }, dir string
 			s.sampleProgress(dir, job, items, meters, at)
 		}
 	}
+}
+
+func newProgressMeters(dir string, items []domain.JobItem) map[string]*speedMeter {
+	initial := itemBytes(dir, items)
+	meters := map[string]*speedMeter{}
+	now := time.Now()
+	for _, it := range items {
+		meter := &speedMeter{}
+		meter.reset(now, initial[it.MessageID])
+		meters[it.MessageID] = meter
+	}
+	return meters
 }

@@ -5,9 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
+	"sync"
+	"time"
 
 	"github.com/local/tdl-gui/internal/account"
 	"github.com/local/tdl-gui/internal/catalog"
@@ -22,17 +21,17 @@ import (
 )
 
 type Application struct {
-	Paths    Paths
-	Store    *store.Store
-	Settings domain.Settings
-	Engine   *engine.Manager
-	Runner   *tdlrunner.Runner
-	Accounts *account.Service
-	Catalog  *catalog.Service
-	Planner  *planner.Planner
-	Preview  *preview.Service
-	Jobs     *jobs.Service
-	Vault    *vault.Vault
+	Paths      Paths
+	Store      *store.Store
+	Settings   domain.Settings
+	settingsMu sync.RWMutex
+	Engine     *engine.Manager
+	Runner     *tdlrunner.Runner
+	Accounts   *account.Service
+	Catalog    *catalog.Service
+	Planner    *planner.Planner
+	Jobs       *jobs.Service
+	Vault      *vault.Vault
 }
 
 func Open(dataDir string, events func(jobs.Event)) (*Application, error) {
@@ -66,14 +65,17 @@ func Open(dataDir string, events func(jobs.Event)) (*Application, error) {
 	a.Accounts = account.New(st, runner)
 	a.Catalog = catalog.New(st, runner, paths.Cache)
 	a.Catalog.Directory = func(ctx context.Context, account domain.Account) ([]domain.Chat, error) {
-		return catalog.RefreshDirectory(ctx, st, runner, paths.TDLStorage, runner.Proxy(), settings.NTP, account)
+		cfg := a.SettingsSnapshot()
+		return catalog.RefreshDirectory(ctx, st, runner, paths.TDLStorage, cfg.Proxy, cfg.NTP, account, reconnectDuration(cfg))
 	}
 	a.Catalog.ScanSource = func(ctx context.Context, account domain.Account, options catalog.ScanOptions, cursor int64) ([]domain.Media, int64, error) {
-		return catalog.ScanTelegram(ctx, st, runner, paths.TDLStorage, runner.Proxy(), settings.NTP, account, options, cursor)
+		cfg := a.SettingsSnapshot()
+		return catalog.ScanTelegram(ctx, st, runner, paths.TDLStorage, cfg.Proxy, cfg.NTP, account, options, cursor, reconnectDuration(cfg))
 	}
 	a.Planner = planner.New(st)
-	a.Preview = preview.New(st, paths.TDLStorage, paths.Cache, settings.Proxy, settings.NTP, settings.CacheMaxBytes, runner)
 	a.Jobs = jobs.New(st, runner, paths.Staging, settings.Retries, settings.FileConcurrency, settings.TaskDelay, settings.MinFreeBytes, events)
+	a.Jobs.SettingsSource = a.SettingsSnapshot
+	runner.SetNetwork(settings.Proxy, settings.NTP, reconnectDuration(settings))
 	return a, nil
 }
 func (a *Application) Close() error {
@@ -85,83 +87,21 @@ func (a *Application) Close() error {
 	return dbErr
 }
 
-func loadSettings(st *store.Store, p Paths) domain.Settings {
-	downloads, _ := os.UserHomeDir()
-	downloads = filepath.Join(downloads, "Downloads", "Telegram Media")
-	s := domain.Settings{ChatOrder: "recent", MediaOrder: "newest", DataDir: p.Root, DownloadRoot: downloads, ReconnectTimeout: "5m", TaskDelay: "0s", FileConcurrency: 2, Retries: 3, MinFreeBytes: 1024 * 1024 * 1024, CacheMaxBytes: 500 * 1024 * 1024, LogLevel: "info"}
-	assign := func(key string, to *string) {
-		if v, e := st.GetSetting(context.Background(), key); e == nil && v != "" {
-			*to = v
-		}
-	}
-	assign("ui.chat.order", &s.ChatOrder)
-	assign("ui.media.order", &s.MediaOrder)
-	assign("download.root", &s.DownloadRoot)
-	if proxy, err := st.GetSetting(context.Background(), "proxy"); err == nil {
-		s.Proxy = proxy // An explicitly empty setting means direct connection.
-	} else {
-		s.Proxy = systemProxy()
-	}
-	assign("ntp", &s.NTP)
-	assign("reconnect.timeout", &s.ReconnectTimeout)
-	assign("task.delay", &s.TaskDelay)
-	assign("log.level", &s.LogLevel)
-	assign("engine.path", &s.EnginePath)
-	assign("engine.version", &s.EngineVersion)
-	integer := func(key string, to *int) {
-		if v, e := st.GetSetting(context.Background(), key); e == nil {
-			if n, e := strconv.Atoi(v); e == nil {
-				*to = n
-			}
-		}
-	}
-	int64v := func(key string, to *int64) {
-		if v, e := st.GetSetting(context.Background(), key); e == nil {
-			if n, e := strconv.ParseInt(v, 10, 64); e == nil {
-				*to = n
-			}
-		}
-	}
-	integer("file.concurrency", &s.FileConcurrency)
-	integer("retries", &s.Retries)
-	int64v("min.free.bytes", &s.MinFreeBytes)
-	int64v("cache.max.bytes", &s.CacheMaxBytes)
-	return s
+func (a *Application) SettingsSnapshot() domain.Settings {
+	a.settingsMu.RLock()
+	defer a.settingsMu.RUnlock()
+	return a.Settings
 }
-
+func reconnectDuration(s domain.Settings) time.Duration {
+	d, _ := time.ParseDuration(s.ReconnectTimeout)
+	return d
+}
+func (a *Application) PreviewService() *preview.Service {
+	s := a.SettingsSnapshot()
+	return preview.New(a.Store, a.Paths.TDLStorage, a.Paths.Cache, s.Proxy, s.NTP, s.CacheMaxBytes, a.Runner, reconnectDuration(s))
+}
 func (a *Application) SetLoginProxy(ctx context.Context, proxy string) error {
-	if err := a.Store.SetSetting(ctx, "proxy", proxy); err != nil {
-		return err
-	}
-	a.Settings.Proxy = proxy
-	a.Runner.SetProxy(proxy)
-	a.Preview = preview.New(a.Store, a.Paths.TDLStorage, a.Paths.Cache, proxy, a.Settings.NTP, a.Settings.CacheMaxBytes, a.Runner)
-	return nil
-}
-
-func (a *Application) SetConfig(ctx context.Context, key, value string) error {
-	allowed := map[string]bool{"download.root": true, "proxy": true, "ntp": true, "reconnect.timeout": true, "task.delay": true, "file.concurrency": true, "retries": true, "min.free.bytes": true, "cache.max.bytes": true, "log.level": true}
-	if key == "ui.chat.order" {
-		if value != "recent" && value != "name" {
-			return errors.New("无效聊天顺序")
-		}
-		a.Settings.ChatOrder = value
-		return a.Store.SetSetting(ctx, key, value)
-	}
-	if key == "ui.media.order" {
-		if value != "oldest" && value != "newest" {
-			return errors.New("无效消息顺序")
-		}
-		a.Settings.MediaOrder = value
-		return a.Store.SetSetting(ctx, key, value)
-	}
-	if strings.HasPrefix(key, "ui.folder.") {
-		return a.Store.SetSetting(ctx, key, value)
-	}
-	if !allowed[key] {
-		return errors.New("unknown config key")
-	}
-	return a.Store.SetSetting(ctx, key, value)
+	return a.SetConfig(ctx, "proxy", proxy)
 }
 func (a *Application) ClearCache(ctx context.Context) error {
 	if err := os.RemoveAll(a.Paths.Cache); err != nil {

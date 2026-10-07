@@ -56,7 +56,7 @@ func (s *rootState) rulesCmd() *cobra.Command {
 			r.Name = "下载规则 " + time.Now().Format("2006-01-02 15:04")
 		}
 		if r.RootDir == "" {
-			r.RootDir = a.Settings.DownloadRoot
+			r.RootDir = a.SettingsSnapshot().DownloadRoot
 		}
 		if r.Template == "" {
 			r.Template = planner.DefaultTemplate

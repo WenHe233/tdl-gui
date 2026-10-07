@@ -7,18 +7,23 @@ export function UpdatePanel({
   version,
   result,
   onApply,
+  disabled = false,
+  onBusyChange,
 }: {
   version: string;
   result: Bootstrap["updateResult"];
   onApply: () => Promise<void>;
+  disabled?: boolean;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [info, setInfo] = useState<AppUpdate>();
   const [phase, setPhase] = useState("");
   const [error, setError] = useState<string>();
   const lock = useRef(false);
   const check = async () => {
-    if (lock.current) return;
+    if (lock.current || disabled) return;
     lock.current = true;
+    onBusyChange?.(true);
     setPhase("正在检测更新…");
     setError(undefined);
     try {
@@ -27,12 +32,14 @@ export function UpdatePanel({
       setError(String(e));
     } finally {
       lock.current = false;
+      onBusyChange?.(false);
       setPhase("");
     }
   };
   const update = async () => {
-    if (lock.current) return;
+    if (lock.current || disabled) return;
     lock.current = true;
+    onBusyChange?.(true);
     setError(undefined);
     setPhase("正在下载并校验更新包…");
     try {
@@ -47,6 +54,7 @@ export function UpdatePanel({
       setError(String(e));
       setPhase("");
       lock.current = false;
+      onBusyChange?.(false);
     }
   };
   return (
@@ -76,11 +84,11 @@ export function UpdatePanel({
         </p>
       )}
       <div className="modal-actions">
-        <button disabled={!!phase} onClick={check}>
+        <button disabled={!!phase || disabled} onClick={check}>
           检测更新
         </button>
         {info?.available && (
-          <button className="primary" disabled={!!phase} onClick={update}>
+          <button className="primary" disabled={!!phase || disabled} onClick={update}>
             一键更新并重启
           </button>
         )}

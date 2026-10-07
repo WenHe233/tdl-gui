@@ -43,15 +43,22 @@ type Event struct {
 	Error   string          `json:"error,omitempty"`
 }
 type StartOptions struct {
-	AccountID       string `json:"accountId"`
-	Method          string `json:"method"`
-	Phone           string `json:"phone,omitempty"`
-	DesktopPath     string `json:"desktopPath,omitempty"`
-	DesktopPasscode string `json:"desktopPasscode,omitempty"`
-	DesktopUserID   string `json:"desktopUserId,omitempty"`
-	Proxy           string `json:"proxy,omitempty"`
-	NTP             string `json:"ntp,omitempty"`
+	ReconnectTimeout string `json:"-"`
+	AccountID        string `json:"accountId"`
+	Method           string `json:"method"`
+	Phone            string `json:"phone,omitempty"`
+	DesktopPath      string `json:"desktopPath,omitempty"`
+	DesktopPasscode  string `json:"desktopPasscode,omitempty"`
+	DesktopUserID    string `json:"desktopUserId,omitempty"`
+	Proxy            string `json:"proxy,omitempty"`
+	NTP              string `json:"ntp,omitempty"`
 }
+
+func (o StartOptions) reconnectTimeout() time.Duration {
+	d, _ := time.ParseDuration(o.ReconnectTimeout)
+	return d
+}
+
 type sessionState struct {
 	committed bool
 	accountID string
@@ -77,6 +84,9 @@ func New(store Store, storagePath string, emit func(Event), gate *tdlrunner.Runn
 }
 
 func (m *Manager) Start(parent context.Context, o StartOptions) (string, error) {
+	if o.ReconnectTimeout == "" {
+		o.ReconnectTimeout = "5m"
+	}
 	a, err := m.store.Account(parent, o.AccountID)
 	if err != nil {
 		return "", err
@@ -195,7 +205,7 @@ func (m *Manager) run(ctx context.Context, loginID string, a domain.Account, o S
 }
 func (m *Manager) qr(ctx context.Context, loginID string, a domain.Account, o StartOptions, kvd storage.Storage, st *sessionState) error {
 	d := tg.NewUpdateDispatcher()
-	c, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: o.Proxy, NTP: o.NTP, ReconnectTimeout: 5 * time.Minute, UpdateHandler: d}, true)
+	c, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: o.Proxy, NTP: o.NTP, ReconnectTimeout: o.reconnectTimeout(), UpdateHandler: d}, true)
 	if err != nil {
 		return err
 	}
@@ -257,7 +267,7 @@ func (m *Manager) code(ctx context.Context, loginID string, a domain.Account, o 
 	if strings.TrimSpace(o.Phone) == "" {
 		return errors.New("phone is required for code login")
 	}
-	c, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: o.Proxy, NTP: o.NTP, ReconnectTimeout: 5 * time.Minute}, true)
+	c, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: o.Proxy, NTP: o.NTP, ReconnectTimeout: o.reconnectTimeout()}, true)
 	if err != nil {
 		return err
 	}
@@ -411,7 +421,7 @@ func (m *Manager) importDesktop(ctx context.Context, loginID string, a domain.Ac
 	if err = kvd.Set(ctx, key.App(), []byte(tclient.AppDesktop)); err != nil {
 		return err
 	}
-	client, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: o.Proxy, NTP: o.NTP, ReconnectTimeout: time.Minute}, false)
+	client, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: o.Proxy, NTP: o.NTP, ReconnectTimeout: o.reconnectTimeout()}, false)
 	if err != nil {
 		return err
 	}

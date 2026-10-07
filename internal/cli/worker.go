@@ -53,7 +53,6 @@ type rpcServer struct {
 	operations      map[string]*mediaOperation
 	requests        sync.WaitGroup
 	cancelRequests  context.CancelFunc
-	previewMu       sync.RWMutex
 	mu              sync.Mutex
 	enc             *json.Encoder
 	app             *app.Application
@@ -145,7 +144,7 @@ func (r *rpcServer) dispatch(ctx context.Context, method string, raw json.RawMes
 		if v, e := r.app.Engine.Active(ctx); e == nil {
 			eng = v
 		}
-		return map[string]any{"version": r.version, "updateResult": r.updater.Result(), "protocolVersion": domain.ProtocolVersion, "settings": r.app.Settings, "accounts": accounts, "activeAccount": active, "engine": eng, "rules": rules, "jobs": js}, nil
+		return map[string]any{"version": r.version, "updateResult": r.updater.Result(), "protocolVersion": domain.ProtocolVersion, "settings": r.app.SettingsSnapshot(), "accounts": accounts, "activeAccount": active, "engine": eng, "rules": rules, "jobs": js}, nil
 	case "app.shutdown":
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -240,18 +239,17 @@ func (r *rpcServer) dispatch(ctx context.Context, method string, raw json.RawMes
 			return nil, e
 		}
 		if _, explicit := fields["proxy"]; explicit {
-			r.previewMu.Lock()
 			e := r.app.SetLoginProxy(ctx, p.Proxy)
-			r.previewMu.Unlock()
 			if e != nil {
 				return nil, e
 			}
 		} else if p.Proxy == "" {
-			p.Proxy = r.app.Settings.Proxy
+			p.Proxy = r.app.SettingsSnapshot().Proxy
 		}
 		if p.NTP == "" {
-			p.NTP = r.app.Settings.NTP
+			p.NTP = r.app.SettingsSnapshot().NTP
 		}
+		p.ReconnectTimeout = r.app.SettingsSnapshot().ReconnectTimeout
 		if _, e := r.account(ctx, p.AccountID); e != nil {
 			return nil, e
 		}
@@ -317,9 +315,7 @@ func (r *rpcServer) dispatch(ctx context.Context, method string, raw json.RawMes
 		if len(p.ChatIDs) > 32 {
 			p.ChatIDs = p.ChatIDs[:32]
 		}
-		r.previewMu.RLock()
-		previewService := r.app.Preview
-		r.previewMu.RUnlock()
+		previewService := r.app.PreviewService()
 		paths, e := previewService.Avatars(ctx, p.AccountID, p.ChatIDs)
 		return imageDataMap(paths), e
 	case "media.list":
@@ -345,9 +341,7 @@ func (r *rpcServer) dispatch(ctx context.Context, method string, raw json.RawMes
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
 		}
-		r.previewMu.RLock()
-		previewService := r.app.Preview
-		r.previewMu.RUnlock()
+		previewService := r.app.PreviewService()
 		path, e := previewService.Thumbnail(ctx, p.AccountID, p.ChatID, p.MessageID)
 		return map[string]string{"path": imageData(path)}, e
 	case "media.thumbnails":
@@ -358,9 +352,7 @@ func (r *rpcServer) dispatch(ctx context.Context, method string, raw json.RawMes
 		if e := decodeParams(raw, &p); e != nil {
 			return nil, e
 		}
-		r.previewMu.RLock()
-		previewService := r.app.Preview
-		r.previewMu.RUnlock()
+		previewService := r.app.PreviewService()
 		paths, e := previewService.Thumbnails(ctx, p.AccountID, p.Items)
 		return imageDataMap(paths), e
 	case "media.preview":
@@ -489,7 +481,13 @@ func (r *rpcServer) dispatch(ctx context.Context, method string, raw json.RawMes
 		}
 		return true, r.app.Jobs.Cancel(ctx, p.ID)
 	case "config.show":
-		return r.app.Settings, nil
+		return r.app.SettingsSnapshot(), nil
+	case "config.update":
+		var p struct{ Values map[string]string }
+		if e := decodeParams(raw, &p); e != nil {
+			return nil, e
+		}
+		return r.app.UpdateConfig(ctx, p.Values)
 	case "config.set":
 		var p struct{ Key, Value string }
 		if e := decodeParams(raw, &p); e != nil {

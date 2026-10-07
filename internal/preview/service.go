@@ -30,6 +30,7 @@ type Service struct {
 	store                          Store
 	storagePath, cache, proxy, ntp string
 	maxBytes                       int64
+	reconnect                      time.Duration
 	gate                           *tdlrunner.Runner
 }
 type Ref struct {
@@ -37,8 +38,12 @@ type Ref struct {
 	MessageID string `json:"messageId"`
 }
 
-func New(store Store, storagePath, cache, proxy, ntp string, maxBytes int64, gate *tdlrunner.Runner) *Service {
-	return &Service{store: store, storagePath: storagePath, cache: cache, proxy: proxy, ntp: ntp, maxBytes: maxBytes, gate: gate}
+func New(store Store, storagePath, cache, proxy, ntp string, maxBytes int64, gate *tdlrunner.Runner, reconnect ...time.Duration) *Service {
+	timeout := 5 * time.Minute
+	if len(reconnect) > 0 {
+		timeout = reconnect[0]
+	}
+	return &Service{store: store, storagePath: storagePath, cache: cache, proxy: proxy, ntp: ntp, maxBytes: maxBytes, gate: gate, reconnect: timeout}
 }
 
 func (s *Service) Thumbnail(ctx context.Context, accountID, chatID, messageID string) (string, error) {
@@ -90,7 +95,7 @@ func (s *Service) Avatars(ctx context.Context, accountID string, chatIDs []strin
 	if err != nil {
 		return nil, err
 	}
-	client, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: s.proxy, NTP: s.ntp, ReconnectTimeout: 5 * time.Minute}, false)
+	client, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: s.proxy, NTP: s.ntp, ReconnectTimeout: s.reconnect}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +168,7 @@ func (s *Service) Thumbnails(ctx context.Context, accountID string, refs []Ref) 
 	if err != nil {
 		return nil, err
 	}
-	client, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: s.proxy, NTP: s.ntp, ReconnectTimeout: 5 * time.Minute}, false)
+	client, err := tclient.New(ctx, tclient.Options{KV: kvd, Proxy: s.proxy, NTP: s.ntp, ReconnectTimeout: s.reconnect}, false)
 	if err != nil {
 		return nil, err
 	}

@@ -41,7 +41,11 @@ func withScanDeadline(ctx context.Context, timeout time.Duration, run func(conte
 
 // ScanTelegram shares the HTTPS-corrected clock and session gate used by chat refresh.
 // Message payloads stay in memory; only parsed media is persisted by Service.Scan.
-func ScanTelegram(ctx context.Context, st *store.Store, gate *tdl.Runner, path, proxy, ntp string, a domain.Account, o ScanOptions, cursor int64) ([]domain.Media, int64, error) {
+func ScanTelegram(ctx context.Context, st *store.Store, gate *tdl.Runner, path, proxy, ntp string, a domain.Account, o ScanOptions, cursor int64, reconnect ...time.Duration) ([]domain.Media, int64, error) {
+	timeout := 5 * time.Minute
+	if len(reconnect) > 0 {
+		timeout = reconnect[0]
+	}
 	if err := gate.AcquireContext(ctx); err != nil {
 		return nil, 0, err
 	}
@@ -72,7 +76,7 @@ func ScanTelegram(ctx context.Context, st *store.Store, gate *tdl.Runner, path, 
 	var items []domain.Media
 	var maxID int64
 	err = withScanDeadline(ctx, 2*time.Minute, func(ctx context.Context, progress func()) error {
-		client, err := tgclient.New(ctx, tgclient.Options{KV: db, Proxy: proxy, NTP: ntp, ReconnectTimeout: time.Minute}, false)
+		client, err := tgclient.New(ctx, tgclient.Options{KV: db, Proxy: proxy, NTP: ntp, ReconnectTimeout: timeout}, false)
 		if err != nil {
 			return err
 		}

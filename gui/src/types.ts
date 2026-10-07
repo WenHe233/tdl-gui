@@ -121,6 +121,12 @@ export type JobItem = {
   error?: string;
 };
 export type Settings = {
+  fileThreads?: number;
+  poolSize?: number;
+  taskDelay?: string;
+  reconnectTimeout?: string;
+  ntp?: string;
+  minFreeBytes?: number;
  chatOrder?: string;
  mediaOrder?: string;
   dataDir: string;

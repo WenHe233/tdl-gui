@@ -1,7 +1,6 @@
 package jobs
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,20 +39,21 @@ type Event struct {
 	Item      *domain.JobItem  `json:"item,omitempty"`
 }
 type Service struct {
-	progressMu  sync.RWMutex
-	progress    map[string]progressSnapshot
-	store       Store
-	runner      *tdl.Runner
-	staging     string
-	retries     int
-	concurrency int
-	delay       string
-	minFree     int64
-	mu          sync.Mutex
-	moveMu      sync.Mutex
-	cancel      map[string]context.CancelFunc
-	cancelled   map[string]bool
-	events      func(Event)
+	SettingsSource func() domain.Settings
+	progressMu     sync.RWMutex
+	progress       map[string]progressSnapshot
+	store          Store
+	runner         *tdl.Runner
+	staging        string
+	retries        int
+	concurrency    int
+	delay          string
+	minFree        int64
+	mu             sync.Mutex
+	moveMu         sync.Mutex
+	cancel         map[string]context.CancelFunc
+	cancelled      map[string]bool
+	events         func(Event)
 }
 
 func New(store Store, runner *tdl.Runner, staging string, retries, concurrency int, delay string, minFree int64, events func(Event)) *Service {
@@ -65,6 +65,20 @@ func New(store Store, runner *tdl.Runner, staging string, retries, concurrency i
 	}
 	return &Service{store: store, runner: runner, staging: staging, retries: retries, concurrency: concurrency, delay: delay, minFree: minFree, cancel: map[string]context.CancelFunc{}, cancelled: map[string]bool{}, events: events}
 }
+func (s *Service) settingsSnapshot() domain.Settings {
+	if s.SettingsSource != nil {
+		return s.SettingsSource()
+	}
+	delay := s.delay
+	if delay == "" {
+		delay = "0s"
+	}
+	return domain.Settings{FileThreads: 8, FileConcurrency: s.concurrency, PoolSize: 8, Retries: s.retries, TaskDelay: delay, MinFreeBytes: s.minFree, ReconnectTimeout: "5m", Proxy: s.runner.Proxy()}
+}
+func downloadArguments(manifest, dir string, cfg domain.Settings) []string {
+	return []string{"download", "--file", manifest, "--dir", dir, "--template", `{{ .MessageID }}_{{ filenamify .FileName }}`, "--threads", strconv.Itoa(cfg.FileThreads), "--limit", strconv.Itoa(cfg.FileConcurrency), "--pool", strconv.Itoa(cfg.PoolSize), "--delay", cfg.TaskDelay, "--reconnect-timeout", cfg.ReconnectTimeout, "--proxy", cfg.Proxy, "--ntp", cfg.NTP, "--continue"}
+}
+
 func (s *Service) emit(e Event) {
 	if e.Type == "job.updated" && e.Job != nil && e.Job.State != "running" {
 		s.clearProgress(e.JobID)
@@ -148,9 +162,10 @@ func (s *Service) start(parent context.Context, id string, failedOnly bool) erro
 	if err != nil {
 		return err
 	}
+	cfg := s.settingsSnapshot()
 	go func() {
 		defer s.release(id, cancel)
-		if err := s.run(ctx, id, failedOnly); err != nil {
+		if err := s.run(ctx, id, failedOnly, cfg); err != nil {
 			s.emit(Event{Type: "job.error", JobID: id, Message: err.Error()})
 		}
 	}()
@@ -162,9 +177,9 @@ func (s *Service) Run(parent context.Context, id string) error {
 		return err
 	}
 	defer s.release(id, cancel)
-	return s.run(ctx, id, false)
+	return s.run(ctx, id, false, s.settingsSnapshot())
 }
-func (s *Service) run(ctx context.Context, id string, failedOnly bool) error {
+func (s *Service) run(ctx context.Context, id string, failedOnly bool, cfg domain.Settings) error {
 	j, items, err := s.store.Job(context.Background(), id)
 	if err != nil {
 		return err
@@ -210,7 +225,7 @@ func (s *Service) run(ctx context.Context, id string, failedOnly bool) error {
 		pending = append(pending, it)
 	}
 	_ = s.store.UpdateJob(context.Background(), j)
-	for attempt := 0; attempt <= s.retries && len(pending) > 0; attempt++ {
+	for attempt := 0; attempt <= cfg.Retries && len(pending) > 0; attempt++ {
 		if ctx.Err() != nil {
 			return s.finishStopped(j)
 		}
@@ -224,24 +239,25 @@ func (s *Service) run(ctx context.Context, id string, failedOnly bool) error {
 		if err = writeManifest(manifest, j.ChatID, pending); err != nil {
 			return s.finishError(j, err)
 		}
-		var logs bytes.Buffer
-		writer := io.MultiWriter(&logs, &eventWriter{emit: func(line string) { s.emit(Event{Type: "job.log", JobID: id, Message: line}) }})
-		if diskErr := checkDisk(pending, s.minFree); diskErr != nil {
+		writer := &eventWriter{emit: func(line string) { s.emit(Event{Type: "job.log", JobID: id, Message: line}) }}
+		if diskErr := checkDisk(pending, cfg.MinFreeBytes); diskErr != nil {
 			j.State = "paused"
 			j.Error = diskErr.Error()
 			_ = s.store.UpdateJob(context.Background(), j)
 			s.emit(Event{Type: "job.updated", JobID: id, Job: &j})
 			return diskErr
 		}
-		downloadArgs := []string{"download", "--file", manifest, "--dir", jobDir, "--template", `{{ .MessageID }}_{{ filenamify .FileName }}`, "--threads", "1", "--limit", strconv.Itoa(s.concurrency), "--continue"}
-		if s.delay != "" && s.delay != "0s" {
-			downloadArgs = append(downloadArgs, "--delay", s.delay)
-		}
+		downloadArgs := downloadArguments(manifest, jobDir, cfg)
+		meters := newProgressMeters(jobDir, pending)
 		cmd, startErr := s.runner.Stream(ctx, a.Namespace, writer, writer, downloadArgs...)
 		if startErr == nil {
-			err = s.waitWithProgress(cmd, jobDir, j, pending)
+			err = s.waitWithProgress(cmd, jobDir, j, pending, meters)
 		} else {
 			err = startErr
+		}
+		writer.Flush()
+		if err != nil && ctx.Err() == nil && writer.Tail() != "" {
+			err = fmt.Errorf("tdl: %w: %s", err, writer.Tail())
 		}
 		var failed []domain.JobItem
 		for _, it := range pending {
@@ -288,8 +304,8 @@ func (s *Service) run(ctx context.Context, id string, failedOnly bool) error {
 		pending = failed
 		j.FailedFiles = len(pending)
 		_ = s.store.UpdateJob(context.Background(), j)
-		if len(pending) > 0 && attempt < s.retries {
-			wait := time.Duration(1<<attempt) * time.Second
+		if len(pending) > 0 && attempt < cfg.Retries {
+			wait := time.Duration(1<<min(attempt, 6)) * time.Second
 			select {
 			case <-ctx.Done():
 			case <-time.After(wait):
@@ -531,6 +547,7 @@ func moveComplete(src, dst string) error {
 type eventWriter struct {
 	mu   sync.Mutex
 	buf  string
+	tail string
 	emit func(string)
 }
 
@@ -538,6 +555,9 @@ func (w *eventWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.buf += string(p)
+	if len(w.buf) > 64*1024 {
+		w.buf = w.buf[len(w.buf)-64*1024:]
+	}
 	for {
 		n := strings.IndexByte(w.buf, '\n')
 		if n < 0 {
@@ -546,10 +566,31 @@ func (w *eventWriter) Write(p []byte) (int, error) {
 		line := strings.TrimSpace(w.buf[:n])
 		w.buf = w.buf[n+1:]
 		if line != "" {
-			w.emit(line)
+			w.record(line)
 		}
 	}
 	return len(p), nil
+}
+
+func (w *eventWriter) record(line string) {
+	w.tail += line + "\n"
+	if len(w.tail) > 8192 {
+		w.tail = w.tail[len(w.tail)-8192:]
+	}
+	w.emit(line)
+}
+func (w *eventWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if line := strings.TrimSpace(w.buf); line != "" {
+		w.record(line)
+	}
+	w.buf = ""
+}
+func (w *eventWriter) Tail() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return strings.TrimSpace(w.tail)
 }
 
 func (s *Service) finishStopped(j domain.Job) error {

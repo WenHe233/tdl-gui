@@ -47,7 +47,7 @@ import { browseChats, withSystemFolders, speedLabel, speedHint } from "./browsin
 import { useSelection, RequestScope } from "./selection";
 import { MediaCard } from "./MediaCard";
 import { JobsDrawer } from "./JobsDrawer";
-import { UpdatePanel } from "./UpdatePanel";
+import { SettingsModal } from "./SettingsModal";
 
 const DEFAULT_TEMPLATE =
   '{{.AccountName}}/{{.ChatName}}/{{date .Date "2006-01-02"}}-{{.MessageID}}-{{.OriginalName}}';
@@ -1703,13 +1703,14 @@ export default function App() {
       )}
       {showSettings && boot && (
         <SettingsModal
-          version={boot.version || "0.3.2"}
+          version={boot.version || "0.3.4"}
           updateResult={boot.updateResult}
           onUpdate={shutdownApp}
           settings={boot.settings}
+          onSaved={(settings) => setBoot((value) => value ? { ...value, settings } : value)}
           engine={engine}
           onClose={() => setShowSettings(false)}
-          onInstall={installEngine}
+          onInstall={async () => { setEngine(await rpc<Engine>("engine.install", { version: "v0.20.4" })); }}
           onChoose={chooseEngine}
           onClear={async () => {
             await rpc("cache.clear");
@@ -2049,70 +2050,6 @@ function PlanDrawer({
           </button>
         </footer>
       </aside>
-    </div>
-  );
-}
-
-function SettingsModal({
-  settings,
-  engine,
-  onClose,
-  onInstall,
-  onChoose,
-  onClear,
-  version,
-  updateResult,
-  onUpdate,
-}: {
-  version: string;
-  updateResult: Bootstrap["updateResult"];
-  onUpdate: () => Promise<void>;
-  settings: Bootstrap["settings"];
-  engine?: Engine;
-  onClose: () => void;
-  onInstall: () => void;
-  onChoose: () => void;
-  onClear: () => void;
-}) {
-  return (
-    <div className="modal-backdrop">
-      <div className="modal settings-modal">
-        <button className="modal-close" onClick={onClose}>
-          <X />
-        </button>
-        <h2>设置与引擎</h2>
-        <UpdatePanel
-          version={version}
-          result={updateResult}
-          onApply={onUpdate}
-        />
-        <dl>
-          <dt>数据目录</dt>
-          <dd>{settings.dataDir}</dd>
-          <dt>默认下载目录</dt>
-          <dd>{settings.downloadRoot}</dd>
-          <dt>缓存上限</dt>
-          <dd>{bytes(settings.cacheMaxBytes)}</dd>
-          <dt>重试次数</dt>
-          <dd>{settings.retries}</dd>
-          <dt>tdl 引擎</dt>
-          <dd>{engine ? `${engine.version} · ${engine.path}` : "尚未安装"}</dd>
-        </dl>
-        <div className="modal-actions">
-          <button onClick={onClear}>
-            <X />
-            清理预览缓存
-          </button>
-          <button onClick={onChoose}>
-            <FolderOpen />
-            指定 tdl.exe
-          </button>
-          <button className="primary" onClick={onInstall}>
-            <RefreshCw />
-            安装/更新 v0.20.4
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
